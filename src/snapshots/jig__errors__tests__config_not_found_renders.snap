@@ -1,0 +1,8 @@
+---
+source: src/errors.rs
+expression: render_for_snapshot(&err)
+---
+  × config file not found
+  │   searched: ./jig.kdl, ./.jig.kdl
+  │   in directory: /home/user/project
+  help: create a jig.kdl file with at least one command definition

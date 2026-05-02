@@ -24,6 +24,7 @@ shlex = "1"
 assert_cmd = "2"
 predicates = "3"
 insta = "1"
+tempfile = "3"
 
 [profile.release]
 lto = "thin"

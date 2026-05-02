@@ -1,0 +1,10 @@
+---
+source: src/errors.rs
+expression: render_for_snapshot(&err)
+---
+  × KDL properties (key=value) are not supported; use child nodes instead
+   ╭─[jig.kdl:1:6]
+ 1 │ host port=8090
+   ·      ────┬────
+   ·          ╰── property here
+   ╰────

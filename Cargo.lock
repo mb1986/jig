@@ -365,6 +365,7 @@ dependencies = [
  "miette 7.6.0",
  "predicates",
  "shlex",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 

@@ -1,0 +1,13 @@
+---
+source: src/errors.rs
+expression: render_for_snapshot(&err)
+---
+  × Failed to parse KDL document
+
+Error: 
+  × Non-digit character found after the '.' of a float
+   ╭────
+ 1 │ foo 1.
+   ·     ─┬─
+   ·      ╰── not float
+   ╰────

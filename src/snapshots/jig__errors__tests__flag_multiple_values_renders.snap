@@ -1,0 +1,11 @@
+---
+source: src/errors.rs
+expression: render_for_snapshot(&err)
+---
+  × flag has multiple values; expected exactly one
+   ╭─[jig.kdl:1:1]
+ 1 │ host "0.0.0.0" "extra"
+   · ───────────┬──────────
+   ·            ╰── flag with multiple values
+   ╰────
+  help: in jig.kdl, a flag is a KDL node with exactly one value (e.g. `host "0.0.0.0"`)
