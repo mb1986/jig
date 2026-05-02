@@ -8,7 +8,9 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+mod errors;
+
 fn main() {
     // Scaffold only. Real wiring lands in the CLI step.
-    std::process::exit(125);
+    std::process::exit(errors::ExitCode::JigFailure.as_i32());
 }
