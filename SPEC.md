@@ -292,9 +292,10 @@ some-tool {
 - A command's alias (if present) must be unique across the file. Duplicate aliases are a parse error.
 - A command name and an alias may not collide (e.g. command `serve` and an alias `serve` on a different command).
 - Within a command, profile names must be unique. Duplicates are a parse error.
-- A profile name may not collide with the name of a default argument key in the same command.
 - Within a single scope (a command's defaults, or a single profile's body), each flag key must appear at most once. Duplicate flag keys within the same scope are a parse error. (Positionals naturally have no key and may repeat freely.)
-- Aliases and command names must not start with `-` (would be ambiguous with `jig`'s own flags).
+- Command names, aliases, and profile names must not start with `-` (would be ambiguous with `jig`'s own flags).
+
+A profile (a node with children) and a default argument (a node without children) may share the same identifier within a command. They are structurally distinct in the KDL source and play different roles at resolution time, so no collision exists.
 
 ## 3. Command-Line Interface
 
@@ -607,6 +608,8 @@ Error messages must include, where applicable:
 
 For KDL parse errors specifically, the underlying parser's diagnostic output (the `kdl` Rust crate produces `miette`-style diagnostics with source spans) should be surfaced rather than discarded, prefixed with the config file path.
 
+Errors that originate from the CLI invocation rather than from the config file (e.g. an unknown command, alias, or profile typed by the user) do **not** carry source spans, since the offending text is not in the config. These errors render as a message plus any relevant alternatives and a `hint:` line — no `-->` source-span block.
+
 Examples of acceptable error output:
 
 ```
@@ -617,12 +620,7 @@ error: config file not found
 ```
 
 ```
-error: unknown profile 'qwen-coder' for command 'llama-server'
-  --> jig.kdl:42:5
-   |
-42 |     jig serve qwen-codr
-   |     ^^^^^^^^^^^^^^^^^^^
-   |
+error: unknown profile 'qwen-codr' for command 'llama-server'
   available profiles: qwen-coder, llama3
   hint: did you mean 'qwen-coder'?
 ```
