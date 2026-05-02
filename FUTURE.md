@@ -302,3 +302,31 @@ the `Vec`, mapping profile names to indices in `children`.
 The v1 constraint stays in place until a real demand signal emerges,
 but the v1 type design will be chosen so that lifting it later is a
 matter of removing one validation rule, not a refactor.
+
+## Windows support
+
+v1 targets Unix only (Linux, macOS). Windows is deferred. Adding it
+later means revisiting at minimum:
+
+- **Path handling.** The "treat as path if it contains a path
+  separator" rule (SPEC §3.6) is currently `/`-only. Windows uses both
+  `\` and `/` as separators, and the conventional rule for whether a
+  bare name is a path is more involved (drive letters, UNC, `.exe`
+  resolution).
+- **Shell-quoting for `--dry-run`.** `shlex` produces POSIX-shell
+  quoting. Pasting the dry-run output into `cmd.exe` or PowerShell
+  would mis-quote anything containing spaces, quotes, or shell
+  metacharacters. A Windows port would need a quoting variant per
+  target shell (or output a normalized form and document the caveat).
+- **Signal mapping.** SPEC §3.5's `128 + signum` convention for
+  signal-killed children is Unix-only. Windows has no analogous
+  signal model; the wrapper-tool exit code would have to be redefined
+  (most likely just propagating `ExitStatus::code()` and dropping the
+  signal-derived range).
+- **Process group / ctrl-c semantics.** SPEC §3.6 leans on Unix
+  process-group inheritance for SIGINT/SIGTERM forwarding. Windows
+  console control events behave differently and would need explicit
+  handling.
+
+None of this is precluded by v1's design; it is just additional work
+that would not pay off for the v1 audience.
