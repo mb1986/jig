@@ -289,10 +289,11 @@ some-tool {
 
 ### 2.9 Constraints and errors
 
+- Command names must be unique across the file. Duplicate command names are a parse error.
 - A command's alias (if present) must be unique across the file. Duplicate aliases are a parse error.
-- A command name and an alias may not collide (e.g. command `serve` and an alias `serve` on a different command).
+- A command name and an alias **on a different command** may not collide (e.g. command `serve` and an alias `serve` on a different command). A command may, however, declare an alias equal to its own name (e.g. `foo "foo" {...}`); this is harmless redundancy and not a collision.
 - Within a command, profile names must be unique. Duplicates are a parse error.
-- Within a single scope (a command's defaults, or a single profile's body), each flag key must appear at most once. Duplicate flag keys within the same scope are a parse error. (Positionals naturally have no key and may repeat freely.)
+- Within a single scope (a command's defaults, or a single profile's body), each flag key must appear at most once **in its resolved CLI form** — i.e. after the §2.5 prefix synthesis. For example, `host "a"` and `--host "b"` both resolve to `--host` and are duplicates. Duplicate flag keys within the same scope are a parse error. (Positionals naturally have no key and may repeat freely.)
 - Command names, aliases, and profile names must not start with `-` (would be ambiguous with `jig`'s own flags).
 
 A profile (a node with children) and a default argument (a node without children) may share the same identifier within a command. They are structurally distinct in the KDL source and play different roles at resolution time, so no collision exists.

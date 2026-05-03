@@ -303,6 +303,51 @@ The v1 constraint stays in place until a real demand signal emerges,
 but the v1 type design will be chosen so that lifting it later is a
 matter of removing one validation rule, not a refactor.
 
+## Repeating the same flag
+
+`SPEC.md` §2.9 forbids the same flag key from appearing more than
+once in a single scope (a command's defaults or one profile body),
+where "same key" means the resolved CLI form after §2.5 prefix
+synthesis. So `host "a"` and `--host "b"` are duplicates, and so
+are two `verbose #true` lines.
+
+Some real tools accept the same flag multiple times, with semantics
+that depend on the flag:
+
+- **Count flags.** `-v -v -v` to increase verbosity (common in
+  Python tools, Ansible, ssh, etc.). Each occurrence increments a
+  counter on the receiver side.
+- **Repeated value flags.** `-I path1 -I path2` (cc-style include
+  paths), `--header A --header B` (curl), `--label k=v --label k2=v2`
+  (kubectl). The receiver collects all occurrences into a list.
+- **Repeated positionals** for variadic arguments — already supported
+  by v1 since positionals have no key and may repeat freely.
+
+A future version could relax the §2.9 flag-key uniqueness rule to
+allow repeated flags, with the resolved CLI emitting each occurrence
+in source order. Open questions:
+
+- **Override semantics with profiles.** Today, if a default sets
+  `verbose #true` and a profile sets `verbose #true` (a duplicate
+  in the merged candidate list), §2.8 first-occurrence positioning
+  collapses them to one. Repeat-flag mode would need a different
+  rule: append rather than collapse, or some opt-in marker on the
+  flag.
+- **Suppression with `#false`.** Does a single `verbose #false` in a
+  profile suppress *all* default `verbose` occurrences, or only
+  one? Probably all (that matches the v1 mental model), but worth
+  stating explicitly.
+- **Boolean repetition.** `verbose #true` / `verbose #true` is
+  redundant in v1's model (the flag is included once). With repeats,
+  is the resolved CLI `--verbose --verbose`? Useful for count flags
+  but surprising for ordinary booleans.
+- **Opt-in vs always-on.** Probably opt-in via a per-flag marker
+  (e.g. a KDL type annotation `(repeat)v #true`) so v1 configs keep
+  their "duplicate keys are typos" safety net.
+
+The v1 constraint stays in place until the design space settles,
+but no v1 type or algorithm change blocks adding it later.
+
 ## Windows support
 
 v1 targets Unix only (Linux, macOS). Windows is deferred. Adding it
