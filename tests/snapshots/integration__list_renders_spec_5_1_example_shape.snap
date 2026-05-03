@@ -1,0 +1,9 @@
+---
+source: tests/integration.rs
+expression: stdout
+---
+llama-server (alias: serve)
+  default-args: --host 0.0.0.0 --port 8090 -c 32768 --flash-attn
+  profiles:
+    qwen-coder
+    llama3

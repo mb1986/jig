@@ -116,6 +116,8 @@ fn explicit_config_flag_skips_cwd_lookup() {
 
 #[test]
 fn list_prints_command_alias_and_profiles() {
+    // §7.1 format: `<name> (alias: <alias>)`, `default-args: ...`
+    // (with §2.5 prefix synthesis), and a `profiles:` block.
     let dir = tempdir().unwrap();
     fs::write(
         dir.path().join("jig.kdl"),
@@ -127,10 +129,10 @@ fn list_prints_command_alias_and_profiles() {
         .arg("--list")
         .assert()
         .code(0)
-        .stdout(predicate::str::contains("llama-server"))
-        .stdout(predicate::str::contains("alias: serve"))
-        .stdout(predicate::str::contains("profile qwen-coder"))
-        .stdout(predicate::str::contains("inferred:host"));
+        .stdout(predicate::str::contains("llama-server (alias: serve)"))
+        .stdout(predicate::str::contains("default-args: --host 0.0.0.0"))
+        .stdout(predicate::str::contains("profiles:"))
+        .stdout(predicate::str::contains("    qwen-coder"));
 }
 
 #[test]
@@ -481,4 +483,152 @@ fn exec_passes_through_passthrough_args() {
         .assert()
         .code(0)
         .stdout(predicate::str::contains("a\nb\nc\n"));
+}
+
+// --- §7.1 list rendering, §3.4 --completions (Step 7) ---
+
+#[test]
+fn list_renders_spec_5_1_example_shape() {
+    // The §7.1 example uses the §5.1 llama-server config. Snapshot
+    // its rendered listing so future format changes are visible.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        r#"llama-server "serve" {
+    host "0.0.0.0"
+    port 8090
+    c 32768
+    flash-attn #true
+
+    qwen-coder {
+        m "/models/qwen-coder.gguf"
+        -ngl 999
+        -ts "0.5,0.5"
+    }
+
+    llama3 {
+        m "/models/llama3.gguf"
+        port 8091
+    }
+}
+"#,
+    )
+    .unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .arg("--list")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    insta::assert_snapshot!(stdout);
+}
+
+#[test]
+fn list_separates_commands_with_blank_line() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "foo {\n    host \"x\"\n}\nbar {\n    port 9000\n}\n",
+    )
+    .unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .arg("--list")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    // A blank line between command blocks: \n\n must occur.
+    assert!(stdout.contains("\n\n"), "stdout was: {stdout:?}");
+}
+
+#[test]
+fn list_omits_default_args_when_none() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "foo {\n    fast {}\n}\n").unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .arg("--list")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(!stdout.contains("default-args"));
+    assert!(stdout.contains("profiles:"));
+    assert!(stdout.contains("    fast"));
+}
+
+#[test]
+fn completions_zsh_emits_non_empty_script() {
+    // No config required (per Q1). Run from an empty directory.
+    let dir = tempdir().unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .arg("--completions")
+        .arg("zsh")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(!stdout.is_empty());
+    // zsh completions start with `#compdef`.
+    assert!(stdout.contains("#compdef"));
+}
+
+#[test]
+fn completions_bash_emits_non_empty_script() {
+    let dir = tempdir().unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .arg("--completions")
+        .arg("bash")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(!stdout.is_empty());
+    // bash completions reference `complete -F`.
+    assert!(stdout.contains("complete"));
+}
+
+#[test]
+fn completions_works_without_config_file() {
+    // Confirms Q1: --completions does not load or require jig.kdl.
+    let empty = tempdir().unwrap();
+    jig()
+        .current_dir(empty.path())
+        .arg("--completions")
+        .arg("fish")
+        .assert()
+        .code(0);
+}
+
+#[test]
+fn completions_unknown_shell_exits_2() {
+    // clap's value_enum rejects unknown shells; clap's parse error
+    // exits with its own code (2), not jig's 125.
+    let dir = tempdir().unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--completions")
+        .arg("ksh")
+        .assert()
+        .failure();
+}
+
+#[test]
+fn help_prints_and_exits_0() {
+    jig()
+        .arg("--help")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("Usage:"));
+}
+
+#[test]
+fn version_flag_prints_version() {
+    jig()
+        .arg("--version")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("jig"));
 }

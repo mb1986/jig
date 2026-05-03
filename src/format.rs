@@ -1,17 +1,69 @@
-//! Convert a resolved argument list into the two output forms
-//! `jig` needs: an [`OsString`] argv for `std::process::Command::args`
-//! (used by [`crate::exec`]) and a single shell-quoted line for
-//! `--dry-run` per `SPEC.md` §7.2.
+//! Convert a resolved argument list into the output forms `jig`
+//! needs:
+//!
+//! - [`to_argv`]: an `OsString` argv for `std::process::Command::args`
+//!   (used by [`crate::exec`]).
+//! - [`to_dry_run`]: a single shell-quoted line for `--dry-run` per
+//!   `SPEC.md` §7.2.
+//! - [`format_args`]: just the argument tokens, shell-quoted and
+//!   space-joined (no program, no pass-through). Used by `--list`
+//!   to render each command's default args per §7.1.
 //!
 //! Implements `SPEC.md` §2.5 (key prefix synthesis), §2.4.1 (`#true`
 //! → bare flag, `#false` → suppressed at the resolve layer), §3.3
 //! (pass-through trails the resolved args), and §7.2 (single-line
-//! shell-quoted dry-run output).
+//! shell-quoted output).
 
 use std::ffi::OsString;
 
 use crate::config::{Argument, FlagValue};
 use crate::errors::{Error, Result};
+
+/// Produce the textual tokens for `args` per §2.5, omitting any
+/// flag whose value is `Bool(false)` (defensive — resolve already
+/// drops them).
+fn args_to_tokens(args: &[Argument]) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::with_capacity(args.len() * 2);
+    for arg in args {
+        match arg {
+            Argument::Flag {
+                key,
+                value: FlagValue::Bool(true),
+                ..
+            } => tokens.push(key.to_cli_flag()),
+            Argument::Flag {
+                value: FlagValue::Bool(false),
+                ..
+            } => {}
+            Argument::Flag {
+                key,
+                value: FlagValue::Literal(s),
+                ..
+            } => {
+                tokens.push(key.to_cli_flag());
+                tokens.push(s.clone());
+            }
+            Argument::Positional(s) => tokens.push(s.clone()),
+        }
+    }
+    tokens
+}
+
+/// Shell-quote each token via `shlex::try_quote` and join with
+/// spaces. Returns [`Error::ArgumentContainsNul`] on values that
+/// contain a NUL byte (which `shlex` cannot quote).
+fn shell_join(tokens: &[String]) -> Result<String> {
+    let mut out = String::new();
+    for (i, t) in tokens.iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        let quoted =
+            shlex::try_quote(t).map_err(|_| Error::ArgumentContainsNul { value: t.clone() })?;
+        out.push_str(&quoted);
+    }
+    Ok(out)
+}
 
 /// Build the [`OsString`] argv vector for
 /// `std::process::Command::args`. `args` should already have been
@@ -59,32 +111,9 @@ pub fn to_argv(args: &[Argument], passthrough: &[OsString]) -> Vec<OsString> {
 /// is not valid UTF-8, or [`Error::ArgumentContainsNul`] if any
 /// value contains a NUL byte (which `shlex` cannot quote).
 pub fn to_dry_run(program: &str, args: &[Argument], passthrough: &[OsString]) -> Result<String> {
-    let mut tokens: Vec<String> = Vec::with_capacity(args.len() * 2 + passthrough.len() + 1);
+    let mut tokens = Vec::with_capacity(args.len() * 2 + passthrough.len() + 1);
     tokens.push(program.to_string());
-    for arg in args {
-        match arg {
-            Argument::Flag {
-                key,
-                value: FlagValue::Bool(true),
-                ..
-            } => tokens.push(key.to_cli_flag()),
-            Argument::Flag {
-                value: FlagValue::Bool(false),
-                ..
-            } => {
-                // Resolve already drops these. Defensive no-op.
-            }
-            Argument::Flag {
-                key,
-                value: FlagValue::Literal(s),
-                ..
-            } => {
-                tokens.push(key.to_cli_flag());
-                tokens.push(s.clone());
-            }
-            Argument::Positional(s) => tokens.push(s.clone()),
-        }
-    }
+    tokens.extend(args_to_tokens(args));
     for pt in passthrough {
         let s = pt
             .to_str()
@@ -94,17 +123,19 @@ pub fn to_dry_run(program: &str, args: &[Argument], passthrough: &[OsString]) ->
             .to_string();
         tokens.push(s);
     }
+    shell_join(&tokens)
+}
 
-    let mut out = String::new();
-    for (i, t) in tokens.iter().enumerate() {
-        if i > 0 {
-            out.push(' ');
-        }
-        let quoted =
-            shlex::try_quote(t).map_err(|_| Error::ArgumentContainsNul { value: t.clone() })?;
-        out.push_str(&quoted);
-    }
-    Ok(out)
+/// Render just the argument tokens (no program, no pass-through),
+/// shell-quoted and space-joined. Used by `--list` to render each
+/// command's default args per `SPEC.md` §7.1.
+///
+/// # Errors
+///
+/// Returns [`Error::ArgumentContainsNul`] if any value contains a
+/// NUL byte.
+pub fn format_args(args: &[Argument]) -> Result<String> {
+    shell_join(&args_to_tokens(args))
 }
 
 #[cfg(test)]
@@ -257,5 +288,27 @@ mod tests {
         let invalid = OsString::from_vec(vec![0xff, 0xfe]);
         let err = to_dry_run("foo", &[], &[invalid]).unwrap_err();
         assert!(matches!(err, Error::PassthroughNotUtf8 { .. }));
+    }
+
+    // --- format_args (used by --list per §7.1) ---
+
+    #[test]
+    fn format_args_omits_program_and_passthrough() {
+        let args = vec![
+            flag(
+                FlagKey::Inferred("host".into()),
+                FlagValue::Literal("0.0.0.0".into()),
+            ),
+            flag(
+                FlagKey::Inferred("flash-attn".into()),
+                FlagValue::Bool(true),
+            ),
+        ];
+        assert_eq!(format_args(&args).unwrap(), "--host 0.0.0.0 --flash-attn");
+    }
+
+    #[test]
+    fn format_args_empty_for_no_defaults() {
+        assert_eq!(format_args(&[]).unwrap(), "");
     }
 }

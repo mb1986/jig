@@ -19,7 +19,8 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
+use clap_complete::Shell;
 
 const USAGE_NOTES: &str = "\
 Positional arguments:
@@ -33,7 +34,13 @@ See SPEC.md §3.1-§3.3 for the full grammar.";
 /// `jig` — run commands with arguments taken from a declarative
 /// configuration file.
 #[derive(Debug, Default, Parser)]
-#[command(version, about, long_about = None, after_help = USAGE_NOTES)]
+#[command(
+    name = "jig",
+    version,
+    about,
+    long_about = None,
+    after_help = USAGE_NOTES,
+)]
 pub struct Cli {
     /// Use `<PATH>` instead of looking for `jig.kdl` / `.jig.kdl`
     /// in the current working directory. Per `SPEC.md` §2.1.
@@ -46,11 +53,16 @@ pub struct Cli {
     pub list: bool,
 
     /// Print the resolved command (shell-quoted) and exit without
-    /// executing. Per `SPEC.md` §3.4. In Step 5 every invocation
-    /// behaves like `--dry-run` — exec lands in Step 6 — so this
-    /// flag is currently a no-op but accepted.
+    /// executing. Per `SPEC.md` §3.4.
     #[arg(short = 'n', long)]
     pub dry_run: bool,
+
+    /// Generate a shell completion script for `<SHELL>`. Hidden
+    /// from `--help` because it is rarely run directly by humans
+    /// (per `IMPLEMENTATION.md` §9.2). Per Q1, this flag does not
+    /// require a config file.
+    #[arg(long, value_name = "SHELL", hide = true)]
+    pub completions: Option<Shell>,
 
     /// Filled by [`parse_argv`], not clap.
     #[arg(skip)]
@@ -102,9 +114,10 @@ fn split_argv(argv: &[OsString]) -> (&[OsString], &[OsString]) {
             // onward is command/profile/passthrough.
             return (&argv[..i], &argv[i..]);
         }
-        // Hyphen-prefixed: a flag. `--config` takes a value.
-        if arg == "--config" {
-            // Skip `--config <value>` (or just `--config` if value
+        // Hyphen-prefixed: a flag. `--config` and `--completions`
+        // take values; everything else is treated as standalone.
+        if matches!(arg.as_ref(), "--config" | "--completions") {
+            // Skip `--<flag> <value>` (or just `--<flag>` if value
             // is missing — let clap error on that).
             i += 2;
         } else {
@@ -112,6 +125,16 @@ fn split_argv(argv: &[OsString]) -> (&[OsString], &[OsString]) {
         }
     }
     (argv, &[])
+}
+
+/// Emit the static completion script for `shell` to stdout, per
+/// `SPEC.md` §3.4. The completion completes `jig`'s own flags and
+/// tells the shell that the next positional is "a command name";
+/// dynamic completion of command/profile names from `jig.kdl` is
+/// deferred (see `FUTURE.md`).
+pub fn emit_completions(shell: Shell) {
+    let mut cmd = Cli::command();
+    clap_complete::generate(shell, &mut cmd, "jig", &mut std::io::stdout());
 }
 
 fn fill_positional(cli: &mut Cli, rest: &[OsString]) {

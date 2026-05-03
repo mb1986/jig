@@ -50,11 +50,17 @@ fn main() {
 }
 
 fn run(cli: &Cli) -> Result<i32> {
+    // `--completions` is handled before any config load, per Q1.
+    if let Some(shell) = cli.completions {
+        crate::cli::emit_completions(shell);
+        return Ok(0);
+    }
+
     let (config, src) = config::load::load(cli.config.as_deref())?;
     config::validate::validate(&config, &src)?;
 
     if cli.list {
-        list::print(&config);
+        list::print(&config)?;
         return Ok(0);
     }
 
