@@ -63,9 +63,7 @@ fn property_on_node_exits_125() {
 }
 
 #[test]
-fn valid_config_with_command_dry_runs_to_stdout() {
-    // From Step 5 onward, a bare `jig <cmd>` against a valid config
-    // resolves and prints the dry-run line on stdout, exit 0.
+fn dry_run_emits_resolved_line_on_stdout() {
     let dir = tempdir().unwrap();
     fs::write(
         dir.path().join("jig.kdl"),
@@ -74,6 +72,7 @@ fn valid_config_with_command_dry_runs_to_stdout() {
     .unwrap();
     jig()
         .current_dir(dir.path())
+        .arg("--dry-run")
         .arg("serve")
         .assert()
         .code(0)
@@ -323,6 +322,7 @@ fn dry_run_for_spec_5_1_llama_server() {
     .unwrap();
     jig()
         .current_dir(dir.path())
+        .arg("--dry-run")
         .arg("serve")
         .arg("qwen-coder")
         .assert()
@@ -342,14 +342,14 @@ fn passthrough_args_appear_at_end() {
     fs::write(dir.path().join("jig.kdl"), "foo {\n    host \"x\"\n}\n").unwrap();
     jig()
         .current_dir(dir.path())
+        .arg("--dry-run")
         .arg("foo")
         .arg("--")
         .arg("--extra")
         .arg("y")
         .assert()
         .code(0)
-        // §3.2: `--` is preserved verbatim in pass-through. If clap
-        // ate it, the assertion below fails and we'll need a workaround.
+        // §3.2: `--` is preserved verbatim in pass-through.
         .stdout(predicate::str::contains("foo --host x"))
         .stdout(predicate::str::contains("--extra y"));
 }
@@ -360,6 +360,7 @@ fn passthrough_hyphen_args_pass_through() {
     fs::write(dir.path().join("jig.kdl"), "foo {\n}\n").unwrap();
     jig()
         .current_dir(dir.path())
+        .arg("--dry-run")
         .arg("foo")
         .arg("-x")
         .arg("--abc")
@@ -379,8 +380,105 @@ fn dry_run_quotes_values_with_spaces() {
     .unwrap();
     jig()
         .current_dir(dir.path())
+        .arg("--dry-run")
         .arg("foo")
         .assert()
         .code(0)
         .stdout(predicate::str::contains("'hello world'"));
+}
+
+// --- §3.5 / §3.6 exec semantics (Step 6) ---
+
+#[test]
+fn exec_propagates_zero_exit() {
+    let dir = tempdir().unwrap();
+    // KDL v2 treats bare `true`/`false` as boolean keywords, so the
+    // command name must be quoted.
+    fs::write(dir.path().join("jig.kdl"), "\"true\" {\n}\n").unwrap();
+    jig().current_dir(dir.path()).arg("true").assert().code(0);
+}
+
+#[test]
+fn exec_propagates_non_zero_exit() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "\"false\" {\n}\n").unwrap();
+    // /bin/false (or similar) exits 1; we propagate verbatim.
+    jig().current_dir(dir.path()).arg("false").assert().code(1);
+}
+
+#[test]
+fn exec_propagates_arbitrary_exit_code() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "sh {\n    -c \"exit 42\"\n}\n").unwrap();
+    jig().current_dir(dir.path()).arg("sh").assert().code(42);
+}
+
+#[test]
+fn exec_missing_binary_exits_127() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "no-such-binary-xyz123 {\n}\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("no-such-binary-xyz123")
+        .assert()
+        .code(127)
+        .stderr(predicate::str::contains("command not found"));
+}
+
+#[cfg(unix)]
+#[test]
+fn exec_non_executable_exits_126() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempdir().unwrap();
+    let bin = dir.path().join("notexec");
+    fs::write(&bin, "#!/bin/sh\necho hi\n").unwrap();
+    // Create the file without executable bits.
+    let mut perms = fs::metadata(&bin).unwrap().permissions();
+    perms.set_mode(0o644);
+    fs::set_permissions(&bin, perms).unwrap();
+
+    fs::write(
+        dir.path().join("jig.kdl"),
+        format!("\"{}\" {{\n}}\n", bin.display()),
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg(bin.to_str().unwrap())
+        .assert()
+        .code(126)
+        .stderr(predicate::str::contains("not executable"));
+}
+
+#[test]
+fn dry_run_does_not_exec() {
+    // With --dry-run, even a missing binary should NOT trigger a 127
+    // exec error — we should print the resolved line and exit 0.
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "no-such-binary-xyz123 {\n}\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--dry-run")
+        .arg("no-such-binary-xyz123")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("no-such-binary-xyz123"));
+}
+
+#[test]
+fn exec_passes_through_passthrough_args() {
+    let dir = tempdir().unwrap();
+    // `printf '%s\n' a b c` exits 0 and prints each on its own line.
+    fs::write(dir.path().join("jig.kdl"), "printf {\n    \"%s\\n\"\n}\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("printf")
+        // `--` so `a` is treated as pass-through rather than profile.
+        .arg("--")
+        .arg("a")
+        .arg("b")
+        .arg("c")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("a\nb\nc\n"));
 }

@@ -16,6 +16,7 @@
 mod cli;
 mod config;
 mod errors;
+mod exec;
 mod format;
 mod list;
 mod resolve;
@@ -30,7 +31,7 @@ use crate::errors::{Error, ExitCode, Result};
 fn main() {
     let parsed = cli::parse_argv();
     let exit = match run(&parsed) {
-        Ok(()) => 0,
+        Ok(code) => code,
         Err(Error::MissingCommand) => {
             // Per Q2: print help to stderr and exit 125 as a
             // usage error, bypassing the standard miette render.
@@ -48,22 +49,24 @@ fn main() {
     std::process::exit(exit);
 }
 
-fn run(args: &Cli) -> Result<()> {
-    let (config, src) = config::load::load(args.config.as_deref())?;
+fn run(cli: &Cli) -> Result<i32> {
+    let (config, src) = config::load::load(cli.config.as_deref())?;
     config::validate::validate(&config, &src)?;
 
-    if args.list {
+    if cli.list {
         list::print(&config);
-        return Ok(());
+        return Ok(0);
     }
 
-    let command_name = args.command.as_deref().ok_or(Error::MissingCommand)?;
+    let command_name = cli.command.as_deref().ok_or(Error::MissingCommand)?;
+    let resolved = resolve::resolve(&config, command_name, cli.profile.as_deref())?;
 
-    let resolved = resolve::resolve(&config, command_name, args.profile.as_deref())?;
-    // Step 5 contract: every invocation behaves like `--dry-run`
-    // until Step 6 introduces exec. The `--dry-run` flag itself
-    // is accepted but currently redundant.
-    let line = format::to_dry_run(&resolved.program, &resolved.args, &args.passthrough)?;
-    println!("{line}");
-    Ok(())
+    if cli.dry_run {
+        let line = format::to_dry_run(&resolved.program, &resolved.args, &cli.passthrough)?;
+        println!("{line}");
+        Ok(0)
+    } else {
+        let argv = format::to_argv(&resolved.args, &cli.passthrough);
+        exec::run(&resolved.program, &argv)
+    }
 }

@@ -17,14 +17,19 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Wrapper-tool exit codes per `SPEC.md` §3.5.
 ///
 /// Successful runs and propagated child exit codes are plain `i32`
-/// values returned out of the success path; this enum names only the
-/// codes that `jig` itself originates. Additional variants
-/// (`NotExecutable`, `NotFound`) land alongside `exec.rs`.
+/// values returned out of the success path; this enum names only
+/// the codes that `jig` itself originates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExitCode {
     /// `jig` itself failed: missing config, parse error, constraint
     /// violation, unknown command/profile/alias, bad CLI usage.
     JigFailure,
+    /// The resolved command was found but is not executable
+    /// (permission denied, not a regular file, ...).
+    NotExecutable,
+    /// The resolved command was not found in `$PATH` (or as a
+    /// path).
+    NotFound,
 }
 
 impl ExitCode {
@@ -33,6 +38,8 @@ impl ExitCode {
     pub const fn as_i32(self) -> i32 {
         match self {
             Self::JigFailure => 125,
+            Self::NotExecutable => 126,
+            Self::NotFound => 127,
         }
     }
 }
@@ -292,15 +299,54 @@ pub enum Error {
         /// The offending value (with the NUL byte present).
         value: String,
     },
+
+    /// The resolved program was not found on `$PATH` or as a path.
+    /// Maps to exit code 127 per `SPEC.md` §3.5.
+    #[error("command not found: {program:?}")]
+    #[diagnostic(help(
+        "check that the command name in jig.kdl matches an executable on $PATH or a path on disk"
+    ))]
+    ExecNotFound {
+        /// The program name as it appeared in the config.
+        program: String,
+    },
+
+    /// The resolved program was found but cannot be executed
+    /// (permission denied, not a regular file, ...). Maps to exit
+    /// code 126 per `SPEC.md` §3.5.
+    #[error("command is not executable: {program:?}")]
+    #[diagnostic(help("check the file's mode bits (e.g. `chmod +x`)"))]
+    ExecNotExecutable {
+        /// The program name as it appeared in the config.
+        program: String,
+        /// The underlying I/O error from the spawn attempt.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// Spawning the child process failed for a reason other than
+    /// "not found" or "not executable". Maps to exit code 125
+    /// (`jig`-internal failure) since this is unusual and likely a
+    /// bug or system issue rather than a user mistake.
+    #[error("failed to spawn {program:?}: {source}")]
+    ExecSpawnFailed {
+        /// The program name as it appeared in the config.
+        program: String,
+        /// The underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 impl Error {
     /// Wrapper-tool exit code for this error per `SPEC.md` §3.5.
-    /// Every variant currently maps to [`ExitCode::JigFailure`];
-    /// exec-related variants will be added in later steps.
+    /// Most variants are `jig`-internal failures (125); exec-layer
+    /// errors map to 126 / 127.
     #[must_use]
     pub const fn exit_code(&self) -> ExitCode {
         match self {
+            Self::ExecNotFound { .. } => ExitCode::NotFound,
+            Self::ExecNotExecutable { .. } => ExitCode::NotExecutable,
             Self::ConfigNotFound { .. }
             | Self::ConfigIo { .. }
             | Self::KdlParse(_)
@@ -317,7 +363,8 @@ impl Error {
             | Self::UnknownProfile { .. }
             | Self::MissingCommand
             | Self::PassthroughNotUtf8 { .. }
-            | Self::ArgumentContainsNul { .. } => ExitCode::JigFailure,
+            | Self::ArgumentContainsNul { .. }
+            | Self::ExecSpawnFailed { .. } => ExitCode::JigFailure,
         }
     }
 }
@@ -503,11 +550,38 @@ mod tests {
     }
 
     #[test]
-    fn all_variants_map_to_jig_failure() {
+    fn config_not_found_maps_to_jig_failure() {
         let err = Error::ConfigNotFound {
             searched: String::new(),
             cwd: PathBuf::from("/"),
         };
         assert_eq!(err.exit_code(), ExitCode::JigFailure);
+    }
+
+    #[test]
+    fn exec_not_found_maps_to_127() {
+        let err = Error::ExecNotFound {
+            program: "missing-bin".to_string(),
+        };
+        assert_eq!(err.exit_code(), ExitCode::NotFound);
+        assert_eq!(err.exit_code().as_i32(), 127);
+    }
+
+    #[test]
+    fn exec_not_executable_maps_to_126() {
+        let err = Error::ExecNotExecutable {
+            program: "bad-bin".to_string(),
+            source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        };
+        assert_eq!(err.exit_code(), ExitCode::NotExecutable);
+        assert_eq!(err.exit_code().as_i32(), 126);
+    }
+
+    #[test]
+    fn exec_not_found_renders() {
+        let err = Error::ExecNotFound {
+            program: "llama-server".to_string(),
+        };
+        insta::assert_snapshot!(render_for_snapshot(&err));
     }
 }

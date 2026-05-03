@@ -1,0 +1,6 @@
+---
+source: src/errors.rs
+expression: render_for_snapshot(&err)
+---
+  × command not found: "llama-server"
+  help: check that the command name in jig.kdl matches an executable on $PATH or a path on disk

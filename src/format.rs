@@ -1,18 +1,52 @@
-//! Convert a resolved argument list into the single shell-quoted
-//! `--dry-run` line per `SPEC.md` §7.2.
+//! Convert a resolved argument list into the two output forms
+//! `jig` needs: an [`OsString`] argv for `std::process::Command::args`
+//! (used by [`crate::exec`]) and a single shell-quoted line for
+//! `--dry-run` per `SPEC.md` §7.2.
 //!
 //! Implements `SPEC.md` §2.5 (key prefix synthesis), §2.4.1 (`#true`
 //! → bare flag, `#false` → suppressed at the resolve layer), §3.3
 //! (pass-through trails the resolved args), and §7.2 (single-line
 //! shell-quoted dry-run output).
-//!
-//! `to_argv` (the `OsString` form for `Command::args`) lands in
-//! Step 6 alongside `exec.rs`, which is the only consumer.
 
 use std::ffi::OsString;
 
 use crate::config::{Argument, FlagValue};
 use crate::errors::{Error, Result};
+
+/// Build the [`OsString`] argv vector for
+/// `std::process::Command::args`. `args` should already have been
+/// through [`crate::resolve`]; `#false` flags are skipped
+/// defensively here in case any slip through.
+#[must_use]
+pub fn to_argv(args: &[Argument], passthrough: &[OsString]) -> Vec<OsString> {
+    let mut out = Vec::with_capacity(args.len() * 2 + passthrough.len());
+    for arg in args {
+        match arg {
+            Argument::Flag {
+                key,
+                value: FlagValue::Bool(true),
+                ..
+            } => out.push(OsString::from(key.to_cli_flag())),
+            Argument::Flag {
+                value: FlagValue::Bool(false),
+                ..
+            } => {
+                // Resolve already drops these; defensive no-op.
+            }
+            Argument::Flag {
+                key,
+                value: FlagValue::Literal(s),
+                ..
+            } => {
+                out.push(OsString::from(key.to_cli_flag()));
+                out.push(OsString::from(s));
+            }
+            Argument::Positional(s) => out.push(OsString::from(s)),
+        }
+    }
+    out.extend(passthrough.iter().cloned());
+    out
+}
 
 /// Build the single shell-quoted line emitted by `--dry-run`. Per
 /// `SPEC.md` §7.2 the output must be copy-pasteable into a POSIX
@@ -86,6 +120,94 @@ mod tests {
             value,
         }
     }
+
+    // --- to_argv ---
+
+    #[test]
+    fn argv_long_form_flag_with_value() {
+        let args = vec![flag(
+            FlagKey::Inferred("host".into()),
+            FlagValue::Literal("0.0.0.0".into()),
+        )];
+        assert_eq!(
+            to_argv(&args, &[]),
+            vec![OsString::from("--host"), OsString::from("0.0.0.0")]
+        );
+    }
+
+    #[test]
+    fn argv_short_form_flag() {
+        let args = vec![flag(
+            FlagKey::Inferred("m".into()),
+            FlagValue::Literal("/p".into()),
+        )];
+        assert_eq!(
+            to_argv(&args, &[]),
+            vec![OsString::from("-m"), OsString::from("/p")]
+        );
+    }
+
+    #[test]
+    fn argv_verbatim_key_passes_through() {
+        let args = vec![flag(
+            FlagKey::Verbatim("-ngl".into()),
+            FlagValue::Literal("999".into()),
+        )];
+        assert_eq!(
+            to_argv(&args, &[]),
+            vec![OsString::from("-ngl"), OsString::from("999")]
+        );
+    }
+
+    #[test]
+    fn argv_bool_true_emits_only_key() {
+        let args = vec![flag(
+            FlagKey::Inferred("flash-attn".into()),
+            FlagValue::Bool(true),
+        )];
+        assert_eq!(to_argv(&args, &[]), vec![OsString::from("--flash-attn")]);
+    }
+
+    #[test]
+    fn argv_bool_false_is_suppressed() {
+        let args = vec![flag(
+            FlagKey::Inferred("foo".into()),
+            FlagValue::Bool(false),
+        )];
+        assert!(to_argv(&args, &[]).is_empty());
+    }
+
+    #[test]
+    fn argv_positionals_emit_verbatim() {
+        let args = vec![
+            Argument::Positional("input.mp4".into()),
+            Argument::Positional("output.mp4".into()),
+        ];
+        assert_eq!(
+            to_argv(&args, &[]),
+            vec![OsString::from("input.mp4"), OsString::from("output.mp4")]
+        );
+    }
+
+    #[test]
+    fn argv_passthrough_appended_at_end() {
+        let args = vec![flag(
+            FlagKey::Inferred("host".into()),
+            FlagValue::Literal("x".into()),
+        )];
+        let pt = vec![OsString::from("--extra"), OsString::from("y")];
+        assert_eq!(
+            to_argv(&args, &pt),
+            vec![
+                OsString::from("--host"),
+                OsString::from("x"),
+                OsString::from("--extra"),
+                OsString::from("y"),
+            ]
+        );
+    }
+
+    // --- to_dry_run ---
 
     #[test]
     fn dry_run_basic() {
