@@ -8,13 +8,17 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use miette::NamedSource;
+
 use super::{Config, parse};
 use crate::errors::{Error, Result};
 
 const PRIMARY: &str = "jig.kdl";
 const FALLBACK: &str = ".jig.kdl";
 
-/// Load and parse the config.
+/// Load and parse the config, returning the parsed [`Config`]
+/// alongside a [`NamedSource`] that the validator can attach to
+/// any constraint diagnostics.
 ///
 /// If `explicit` is `Some`, that path is used directly (relative
 /// paths are resolved against the CWD as usual). Otherwise, the
@@ -25,7 +29,7 @@ const FALLBACK: &str = ".jig.kdl";
 /// Returns [`Error::ConfigNotFound`] if no config file exists in
 /// the search location, [`Error::ConfigIo`] if reading the chosen
 /// file fails, or any error produced by [`parse::parse_str`].
-pub fn load(explicit: Option<&Path>) -> Result<Config> {
+pub fn load(explicit: Option<&Path>) -> Result<(Config, NamedSource<String>)> {
     let path = match explicit {
         Some(p) => p.to_path_buf(),
         None => discover_in_cwd()?,
@@ -38,7 +42,9 @@ pub fn load(explicit: Option<&Path>) -> Result<Config> {
         || path.display().to_string(),
         |n| n.to_string_lossy().into_owned(),
     );
-    parse::parse_str(&content, &display_name)
+    let config = parse::parse_str(&content, &display_name)?;
+    let src = NamedSource::new(display_name, content);
+    Ok((config, src))
 }
 
 fn discover_in_cwd() -> Result<PathBuf> {

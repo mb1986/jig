@@ -49,6 +49,7 @@ fn parse_command(node: &KdlNode, src: &NamedSource<String>) -> Result<Command> {
     reject_properties(node, src)?;
 
     let name = node.name().value().to_string();
+    let name_span = node.name().span();
 
     // The command node may carry one optional value (the alias).
     // More than one value is a parse error.
@@ -57,9 +58,9 @@ fn parse_command(node: &KdlNode, src: &NamedSource<String>) -> Result<Command> {
         .iter()
         .filter(|e| e.name().is_none())
         .collect();
-    let alias = match values.as_slice() {
-        [] => None,
-        [entry] => Some(string_value(entry, src)?),
+    let (alias, alias_span) = match values.as_slice() {
+        [] => (None, None),
+        [entry] => (Some(string_value(entry, src)?), Some(entry.span())),
         [_, extra, ..] => {
             return Err(Error::FlagMultipleValues {
                 src: src.clone(),
@@ -75,7 +76,9 @@ fn parse_command(node: &KdlNode, src: &NamedSource<String>) -> Result<Command> {
 
     Ok(Command {
         name,
+        name_span,
         alias,
+        alias_span,
         children,
     })
 }
@@ -103,11 +106,16 @@ fn parse_command_child(node: &KdlNode, src: &NamedSource<String>) -> Result<Comm
             });
         }
         let name = node.name().value().to_string();
+        let name_span = node.name().span();
         let mut args = Vec::with_capacity(child_doc.nodes().len());
         for arg_node in child_doc.nodes() {
             args.push(parse_argument(arg_node, src)?);
         }
-        Ok(CommandChild::Profile { name, args })
+        Ok(CommandChild::Profile {
+            name,
+            name_span,
+            args,
+        })
     } else {
         // No children → default argument (flag or positional).
         Ok(CommandChild::Default(parse_argument(node, src)?))
@@ -126,6 +134,7 @@ fn parse_argument(node: &KdlNode, src: &NamedSource<String>) -> Result<Argument>
         [] => Ok(Argument::Positional(node.name().value().to_string())),
         [entry] => Ok(Argument::Flag {
             key: classify_flag_key(node.name().value()),
+            key_span: node.name().span(),
             value: flag_value(entry),
         }),
         [_first, extra, ..] => Err(Error::FlagMultipleValues {
@@ -165,14 +174,7 @@ fn flag_value(entry: &KdlEntry) -> FlagValue {
 fn string_value(entry: &KdlEntry, src: &NamedSource<String>) -> Result<String> {
     match entry.value() {
         KdlValue::String(s) => Ok(s.clone()),
-        _ => Err(Error::FlagMultipleValues {
-            // Re-using FlagMultipleValues here would be wrong; aliases
-            // must be strings. We don't yet have a dedicated variant
-            // for "expected string"; for now, surface as a generic
-            // shape error pointing at the offending entry.
-            //
-            // TODO(step 4): introduce `Error::ExpectedString` once
-            // the validator's error vocabulary lands.
+        _ => Err(Error::ExpectedString {
             src: src.clone(),
             span: entry.span(),
         }),
@@ -224,7 +226,7 @@ mod tests {
     #[test]
     fn flag_two_char_key_is_inferred_long() {
         let cfg = parse(r#"foo { host "0.0.0.0" }"#).unwrap();
-        let CommandChild::Default(Argument::Flag { key, value }) = &cfg.commands[0].children[0]
+        let CommandChild::Default(Argument::Flag { key, value, .. }) = &cfg.commands[0].children[0]
         else {
             panic!("expected default flag");
         };
@@ -246,7 +248,7 @@ mod tests {
     #[test]
     fn flag_with_explicit_dash_is_verbatim() {
         let cfg = parse(r"foo { -ngl 999 }").unwrap();
-        let CommandChild::Default(Argument::Flag { key, value }) = &cfg.commands[0].children[0]
+        let CommandChild::Default(Argument::Flag { key, value, .. }) = &cfg.commands[0].children[0]
         else {
             panic!("expected default flag");
         };

@@ -1,0 +1,14 @@
+---
+source: src/errors.rs
+expression: render_for_snapshot(&err)
+---
+  × alias "serve" collides with a command of the same name
+   ╭─[jig.kdl:1:1]
+ 1 │ serve {}
+   · ──┬──
+   ·   ╰── command name here
+ 2 │ llama-server "serve" {}
+   ·              ───┬───
+   ·                 ╰── alias here
+   ╰────
+  help: rename the alias or the command

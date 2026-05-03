@@ -25,7 +25,7 @@ fn print_command(cmd: &Command) {
     for child in &cmd.children {
         match child {
             CommandChild::Default(arg) => println!("  default: {}", describe_arg(arg)),
-            CommandChild::Profile { name, args } => {
+            CommandChild::Profile { name, args, .. } => {
                 println!("  profile {name}");
                 for arg in args {
                     println!("    {}", describe_arg(arg));
@@ -37,7 +37,7 @@ fn print_command(cmd: &Command) {
 
 fn describe_arg(arg: &Argument) -> String {
     match arg {
-        Argument::Flag { key, value } => {
+        Argument::Flag { key, value, .. } => {
             let key_str = match key {
                 FlagKey::Inferred(s) => format!("inferred:{s}"),
                 FlagKey::Verbatim(s) => format!("verbatim:{s}"),

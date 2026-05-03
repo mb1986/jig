@@ -1,0 +1,11 @@
+---
+source: src/errors.rs
+expression: render_for_snapshot(&err)
+---
+  × command name "-bad-cmd" must not start with `-`
+   ╭─[jig.kdl:1:1]
+ 1 │ -bad-cmd {}
+   · ────┬───
+   ·     ╰── starts with `-`
+   ╰────
+  help: names starting with `-` would be ambiguous with `jig`'s own flags; rename it

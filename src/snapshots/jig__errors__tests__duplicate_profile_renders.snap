@@ -1,0 +1,16 @@
+---
+source: src/errors.rs
+expression: render_for_snapshot(&err)
+---
+  × profile "fast" is defined more than once in command "foo"
+   ╭─[jig.kdl:2:3]
+ 1 │ foo {
+ 2 │   fast {}
+   ·   ──┬─
+   ·     ╰── first defined here
+ 3 │   fast {}
+   ·   ──┬─
+   ·     ╰── also defined here
+ 4 │ }
+   ╰────
+  help: profile names must be unique within a command

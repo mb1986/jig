@@ -139,3 +139,110 @@ fn list_requires_config_to_exist() {
         .code(125)
         .stderr(predicate::str::contains("config file not found"));
 }
+
+// --- §2.9 constraint enforcement (Step 4) ---
+
+#[test]
+fn duplicate_command_name_exits_125() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "foo {}\nfoo {}\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains("defined more than once"));
+}
+
+#[test]
+fn duplicate_alias_exits_125() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "llama-server \"serve\" {}\ngemma-server \"serve\" {}\n",
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains("alias \"serve\""));
+}
+
+#[test]
+fn cross_command_alias_collision_exits_125() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "serve {}\nllama-server \"serve\" {}\n",
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains("collides"));
+}
+
+#[test]
+fn self_alias_is_accepted() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "foo \"foo\" {}\n").unwrap();
+    jig().current_dir(dir.path()).assert().code(0);
+}
+
+#[test]
+fn duplicate_profile_in_command_exits_125() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "foo {\n    fast {}\n    fast {}\n}\n",
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains("profile \"fast\""));
+}
+
+#[test]
+fn duplicate_flag_key_exits_125() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "foo {\n    host \"a\"\n    host \"b\"\n}\n",
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains("--host"));
+}
+
+#[test]
+fn resolved_form_flag_collision_exits_125() {
+    // `host "a"` and `--host "b"` both resolve to --host.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "foo {\n    host \"a\"\n    --host \"b\"\n}\n",
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains("--host"));
+}
+
+#[test]
+fn leading_dash_command_name_exits_125() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "\"-bad\" {}\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains("must not start with `-`"));
+}

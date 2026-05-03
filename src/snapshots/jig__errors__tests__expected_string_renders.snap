@@ -1,0 +1,11 @@
+---
+source: src/errors.rs
+expression: render_for_snapshot(&err)
+---
+  × expected a string here
+   ╭─[jig.kdl:1:5]
+ 1 │ foo 42 {}
+   ·     ─┬
+   ·      ╰── not a string
+   ╰────
+  help: an alias is the first KDL value on a command node, written as a quoted string

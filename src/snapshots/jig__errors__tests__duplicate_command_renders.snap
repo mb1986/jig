@@ -1,0 +1,14 @@
+---
+source: src/errors.rs
+expression: render_for_snapshot(&err)
+---
+  × command "llama-server" is defined more than once
+   ╭─[jig.kdl:1:1]
+ 1 │ llama-server {}
+   · ──────┬─────
+   ·       ╰── first defined here
+ 2 │ llama-server {}
+   · ──────┬─────
+   ·       ╰── also defined here
+   ╰────
+  help: each command name may appear at most once

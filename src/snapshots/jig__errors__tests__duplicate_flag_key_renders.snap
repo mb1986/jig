@@ -1,0 +1,16 @@
+---
+source: src/errors.rs
+expression: render_for_snapshot(&err)
+---
+  × flag --host is set more than once in this scope
+   ╭─[jig.kdl:2:3]
+ 1 │ foo {
+ 2 │   host "a"
+   ·   ──┬─
+   ·     ╰── first set here
+ 3 │   --host "b"
+   ·   ───┬──
+   ·      ╰── also set here
+ 4 │ }
+   ╰────
+  help: each flag key may appear at most once within a scope; `host "a"` and `--host "b"` both resolve to `--host` and so are duplicates

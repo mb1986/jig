@@ -1,12 +1,17 @@
 //! Parsed-and-validated configuration tree.
 //!
 //! Types defined here mirror `IMPLEMENTATION.md` §7.2 and §7.3.1
-//! verbatim. They are produced by [`parse::parse_str`] and
-//! consumed by `--list` rendering today; later steps add the
-//! validator and resolver as additional consumers.
+//! verbatim, with the addition of source spans on each name-bearing
+//! field so the validator can produce two-span diagnostics per
+//! `SPEC.md` §7.4 (e.g. duplicate alias pointing at both sites).
+//! Spans use `miette::SourceSpan`; they are populated by the parser
+//! and read by the validator.
+
+use miette::SourceSpan;
 
 pub mod load;
 pub mod parse;
+pub mod validate;
 
 /// A whole `jig.kdl` document, post-parse.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,8 +28,12 @@ pub struct Command {
     /// The executable name (resolved via `$PATH`) or path. The KDL
     /// node name.
     pub name: String,
+    /// Source span of `name` in the KDL document.
+    pub name_span: SourceSpan,
     /// Optional alias (the first KDL value on the command node).
     pub alias: Option<String>,
+    /// Source span of the alias entry, present iff `alias` is.
+    pub alias_span: Option<SourceSpan>,
     /// Source-ordered children: defaults and profiles interleaved.
     /// See `IMPLEMENTATION.md` §7.3.1 for why this is one list
     /// rather than two collections.
@@ -43,6 +52,8 @@ pub enum CommandChild {
     Profile {
         /// Profile name (KDL node name).
         name: String,
+        /// Source span of `name`.
+        name_span: SourceSpan,
         /// Profile body, in source order.
         args: Vec<Argument>,
     },
@@ -58,6 +69,8 @@ pub enum Argument {
     Flag {
         /// Flag key, possibly with explicit dash prefix.
         key: FlagKey,
+        /// Source span of the key (the KDL node name).
+        key_span: SourceSpan,
         /// Flag value (boolean or stringified literal).
         value: FlagValue,
     },
@@ -78,6 +91,24 @@ pub enum FlagKey {
     Verbatim(String),
 }
 
+impl FlagKey {
+    /// Resolve this key to its CLI form per `SPEC.md` §2.5: a
+    /// `Verbatim` key is passed through; an `Inferred` key gets a
+    /// `-` prefix when one character long, `--` otherwise.
+    ///
+    /// Used by the validator (for §2.9 duplicate detection) and the
+    /// formatter (for emission). We measure length in `char`s, not
+    /// bytes, so a multi-byte single character also picks up `-`.
+    #[must_use]
+    pub fn to_cli_flag(&self) -> String {
+        match self {
+            Self::Verbatim(s) => s.clone(),
+            Self::Inferred(s) if s.chars().count() == 1 => format!("-{s}"),
+            Self::Inferred(s) => format!("--{s}"),
+        }
+    }
+}
+
 /// Flag value, distinguishing the KDL boolean keyword `#true`/`#false`
 /// (which control include/suppress) from any other literal value.
 /// Per `SPEC.md` §2.4.1.
@@ -91,4 +122,31 @@ pub enum FlagValue {
     /// source text rather than parsed numeric form to avoid
     /// precision loss on floats and integer-vs-float ambiguity.
     Literal(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flag_key_to_cli_long_form() {
+        assert_eq!(
+            FlagKey::Inferred("host".to_string()).to_cli_flag(),
+            "--host"
+        );
+    }
+
+    #[test]
+    fn flag_key_to_cli_short_form() {
+        assert_eq!(FlagKey::Inferred("m".to_string()).to_cli_flag(), "-m");
+    }
+
+    #[test]
+    fn flag_key_to_cli_verbatim_passes_through() {
+        assert_eq!(FlagKey::Verbatim("-ngl".to_string()).to_cli_flag(), "-ngl");
+        assert_eq!(
+            FlagKey::Verbatim("--explicit".to_string()).to_cli_flag(),
+            "--explicit"
+        );
+    }
 }

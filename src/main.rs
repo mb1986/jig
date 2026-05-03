@@ -7,6 +7,11 @@
 #![warn(clippy::pedantic, clippy::nursery)]
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
+// Diagnostic-rich error variants carry `NamedSource<String>` inline
+// so spans render against the right file (per `SPEC.md` §7.4).
+// Boxing every `Err` propagation to satisfy `result_large_err`
+// would only add allocations on the cold path.
+#![allow(clippy::result_large_err)]
 
 mod cli;
 mod config;
@@ -36,15 +41,11 @@ fn main() {
 }
 
 fn run(args: &Cli) -> Result<()> {
-    let config = config::load::load(args.config.as_deref())?;
+    let (config, src) = config::load::load(args.config.as_deref())?;
+    config::validate::validate(&config, &src)?;
     if args.list {
         list::print(&config);
     }
     // No command/profile execution yet — that lands in Step 5+.
-    // Step 3's contract: a valid config exits 0; an invalid one
-    // exits 125 with a diagnostic. The `_ = config;` below keeps
-    // `Config` reachable when `--list` is not set, since the
-    // parsed value is otherwise dropped here unread.
-    drop(config);
     Ok(())
 }
