@@ -16,23 +16,31 @@
 mod cli;
 mod config;
 mod errors;
+mod format;
 mod list;
+mod resolve;
 
-use clap::Parser;
+use std::io::Write;
+
+use clap::CommandFactory;
 
 use crate::cli::Cli;
-use crate::errors::Result;
+use crate::errors::{Error, ExitCode, Result};
 
 fn main() {
-    let parsed = Cli::parse();
+    let parsed = cli::parse_argv();
     let exit = match run(&parsed) {
         Ok(()) => 0,
+        Err(Error::MissingCommand) => {
+            // Per Q2: print help to stderr and exit 125 as a
+            // usage error, bypassing the standard miette render.
+            let mut cmd = Cli::command();
+            let _ = cmd.write_help(&mut std::io::stderr());
+            let _ = writeln!(std::io::stderr());
+            ExitCode::JigFailure.as_i32()
+        }
         Err(e) => {
             let code = e.exit_code().as_i32();
-            // miette's default Debug impl on Report uses the
-            // configured handler, which falls back to a graphical
-            // terminal-aware renderer when the `fancy` feature is
-            // on.
             eprintln!("{:?}", miette::Report::new(e));
             code
         }
@@ -43,9 +51,19 @@ fn main() {
 fn run(args: &Cli) -> Result<()> {
     let (config, src) = config::load::load(args.config.as_deref())?;
     config::validate::validate(&config, &src)?;
+
     if args.list {
         list::print(&config);
+        return Ok(());
     }
-    // No command/profile execution yet — that lands in Step 5+.
+
+    let command_name = args.command.as_deref().ok_or(Error::MissingCommand)?;
+
+    let resolved = resolve::resolve(&config, command_name, args.profile.as_deref())?;
+    // Step 5 contract: every invocation behaves like `--dry-run`
+    // until Step 6 introduces exec. The `--dry-run` flag itself
+    // is accepted but currently redundant.
+    let line = format::to_dry_run(&resolved.program, &resolved.args, &args.passthrough)?;
+    println!("{line}");
     Ok(())
 }

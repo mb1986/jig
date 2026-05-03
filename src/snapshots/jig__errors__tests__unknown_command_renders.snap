@@ -1,0 +1,7 @@
+---
+source: src/errors.rs
+expression: render_for_snapshot(&err)
+---
+  × unknown command or alias "qwen-codr"
+  help: available commands: llama-server, gemma-server, serve
+        did you mean "serve"?

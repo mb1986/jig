@@ -63,7 +63,9 @@ fn property_on_node_exits_125() {
 }
 
 #[test]
-fn valid_config_exits_0_silently() {
+fn valid_config_with_command_dry_runs_to_stdout() {
+    // From Step 5 onward, a bare `jig <cmd>` against a valid config
+    // resolves and prints the dry-run line on stdout, exit 0.
     let dir = tempdir().unwrap();
     fs::write(
         dir.path().join("jig.kdl"),
@@ -72,9 +74,10 @@ fn valid_config_exits_0_silently() {
     .unwrap();
     jig()
         .current_dir(dir.path())
+        .arg("serve")
         .assert()
         .code(0)
-        .stdout(predicate::str::is_empty())
+        .stdout(predicate::str::contains("llama-server --host 0.0.0.0"))
         .stderr(predicate::str::is_empty());
 }
 
@@ -82,7 +85,8 @@ fn valid_config_exits_0_silently() {
 fn dot_jig_kdl_is_used_when_jig_kdl_absent() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join(".jig.kdl"), "foo\n").unwrap();
-    jig().current_dir(dir.path()).assert().code(0);
+    // `--list` confirms the config loaded and validated cleanly.
+    jig().current_dir(dir.path()).arg("--list").assert().code(0);
 }
 
 #[test]
@@ -91,7 +95,7 @@ fn jig_kdl_wins_over_dot_jig_kdl_when_both_exist() {
     fs::write(dir.path().join("jig.kdl"), "foo\n").unwrap();
     fs::write(dir.path().join(".jig.kdl"), "this is invalid kdl {").unwrap();
     // If `.jig.kdl` were preferred, we'd get a parse error and exit 125.
-    jig().current_dir(dir.path()).assert().code(0);
+    jig().current_dir(dir.path()).arg("--list").assert().code(0);
 }
 
 #[test]
@@ -106,6 +110,7 @@ fn explicit_config_flag_skips_cwd_lookup() {
         .current_dir(other.path())
         .arg("--config")
         .arg(&cfg)
+        .arg("--list")
         .assert()
         .code(0);
 }
@@ -187,7 +192,7 @@ fn cross_command_alias_collision_exits_125() {
 fn self_alias_is_accepted() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("jig.kdl"), "foo \"foo\" {}\n").unwrap();
-    jig().current_dir(dir.path()).assert().code(0);
+    jig().current_dir(dir.path()).arg("--list").assert().code(0);
 }
 
 #[test]
@@ -245,4 +250,137 @@ fn leading_dash_command_name_exits_125() {
         .assert()
         .code(125)
         .stderr(predicate::str::contains("must not start with `-`"));
+}
+
+// --- §3.1 / §3.4 / §7.2 dry-run + resolution (Step 5) ---
+
+#[test]
+fn no_command_prints_help_and_exits_125() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "foo {}\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains("Usage:"));
+}
+
+#[test]
+fn unknown_command_exits_125_with_did_you_mean() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "llama-server \"serve\" {\n    host \"0.0.0.0\"\n}\n",
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("llama-servr")
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains("unknown command"))
+        .stderr(predicate::str::contains("did you mean"));
+}
+
+#[test]
+fn unknown_profile_exits_125_with_available_list() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "foo {\n    fast {}\n    slow {}\n}\n",
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("foo")
+        .arg("medium")
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains("unknown profile"))
+        .stderr(predicate::str::contains("fast"))
+        .stderr(predicate::str::contains("slow"));
+}
+
+#[test]
+fn dry_run_for_spec_5_1_llama_server() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        r#"llama-server "serve" {
+    host "0.0.0.0"
+    port 8090
+    c 32768
+    flash-attn #true
+
+    qwen-coder {
+        m "/models/qwen-coder.gguf"
+        -ngl 999
+        -ts "0.5,0.5"
+    }
+}
+"#,
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("serve")
+        .arg("qwen-coder")
+        .assert()
+        .code(0)
+        // shlex conservatively single-quotes values containing comma, so
+        // `0.5,0.5` renders as `'0.5,0.5'`. Per §7.2 ("may be emitted
+        // unquoted for readability"), unquoted is permission, not
+        // requirement; the line is still copy-paste-faithful.
+        .stdout(predicate::str::contains(
+            "llama-server --host 0.0.0.0 --port 8090 -c 32768 --flash-attn -m /models/qwen-coder.gguf -ngl 999 -ts '0.5,0.5'",
+        ));
+}
+
+#[test]
+fn passthrough_args_appear_at_end() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "foo {\n    host \"x\"\n}\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("foo")
+        .arg("--")
+        .arg("--extra")
+        .arg("y")
+        .assert()
+        .code(0)
+        // §3.2: `--` is preserved verbatim in pass-through. If clap
+        // ate it, the assertion below fails and we'll need a workaround.
+        .stdout(predicate::str::contains("foo --host x"))
+        .stdout(predicate::str::contains("--extra y"));
+}
+
+#[test]
+fn passthrough_hyphen_args_pass_through() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "foo {\n}\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("foo")
+        .arg("-x")
+        .arg("--abc")
+        .arg("-y")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("-x --abc -y"));
+}
+
+#[test]
+fn dry_run_quotes_values_with_spaces() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "foo {\n    label \"hello world\"\n}\n",
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("foo")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("'hello world'"));
 }

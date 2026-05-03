@@ -1,0 +1,7 @@
+---
+source: src/errors.rs
+expression: render_for_snapshot(&err)
+---
+  × unknown profile "qwen-codr" for command "llama-server"
+  help: available profiles: qwen-coder, llama3
+        did you mean "qwen-coder"?

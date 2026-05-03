@@ -1,0 +1,6 @@
+---
+source: src/errors.rs
+expression: render_for_snapshot(&err)
+---
+  × pass-through argument is not valid UTF-8 and cannot be shell-quoted: "hello�world"
+  help: remove the non-UTF-8 argument or omit `--dry-run`; execution itself does not require UTF-8

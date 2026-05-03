@@ -234,6 +234,64 @@ pub enum Error {
         #[label("also set here")]
         second: SourceSpan,
     },
+
+    /// The CLI invocation named a command/alias that does not
+    /// appear in the config. CLI-origin error: no source span,
+    /// per `SPEC.md` §7.4. The `help` field is pre-formatted with
+    /// any did-you-mean suggestion.
+    #[error("unknown command or alias {name:?}")]
+    UnknownCommand {
+        /// The unrecognized name as typed.
+        name: String,
+        /// Pre-formatted help with available names and an
+        /// optional did-you-mean suggestion.
+        #[help]
+        help: String,
+    },
+
+    /// The CLI invocation named a profile that does not appear
+    /// under the matched command. CLI-origin error: no source
+    /// span, per `SPEC.md` §7.4.
+    #[error("unknown profile {profile:?} for command {command:?}")]
+    UnknownProfile {
+        /// The unrecognized profile name.
+        profile: String,
+        /// The matched command name.
+        command: String,
+        /// Pre-formatted help with available profiles and an
+        /// optional did-you-mean suggestion.
+        #[help]
+        help: String,
+    },
+
+    /// `jig` was invoked without a command (and without `--list`
+    /// or another flag-only mode). Per Q2, this is treated as a
+    /// usage error: `main` prints `--help` to stderr and exits
+    /// 125 directly, bypassing the standard miette rendering.
+    #[error("no command specified")]
+    MissingCommand,
+
+    /// A pass-through argument is not valid UTF-8, so it cannot
+    /// be shell-quoted for `--dry-run` output. Per Q7, we error
+    /// rather than emit replacement characters that would break
+    /// the §7.2 copy-paste contract.
+    #[error("pass-through argument is not valid UTF-8 and cannot be shell-quoted: {lossy:?}")]
+    #[diagnostic(help(
+        "remove the non-UTF-8 argument or omit `--dry-run`; execution itself does not require UTF-8"
+    ))]
+    PassthroughNotUtf8 {
+        /// Lossy rendering of the offending value, for diagnostic
+        /// purposes only — never emitted into the dry-run line.
+        lossy: String,
+    },
+
+    /// A value contains a NUL byte and so cannot be passed to a
+    /// process or shell-quoted. Rare but defensively handled.
+    #[error("argument {value:?} contains a NUL byte and cannot be passed to a process")]
+    ArgumentContainsNul {
+        /// The offending value (with the NUL byte present).
+        value: String,
+    },
 }
 
 impl Error {
@@ -254,7 +312,12 @@ impl Error {
             | Self::DuplicateAlias { .. }
             | Self::CommandAliasCollision { .. }
             | Self::DuplicateProfile { .. }
-            | Self::DuplicateFlagKey { .. } => ExitCode::JigFailure,
+            | Self::DuplicateFlagKey { .. }
+            | Self::UnknownCommand { .. }
+            | Self::UnknownProfile { .. }
+            | Self::MissingCommand
+            | Self::PassthroughNotUtf8 { .. }
+            | Self::ArgumentContainsNul { .. } => ExitCode::JigFailure,
         }
     }
 }
@@ -406,6 +469,35 @@ mod tests {
             src,
             first: SourceSpan::from((8, 4)),
             second: SourceSpan::from((19, 6)),
+        };
+        insta::assert_snapshot!(render_for_snapshot(&err));
+    }
+
+    #[test]
+    fn unknown_command_renders() {
+        let err = Error::UnknownCommand {
+            name: "qwen-codr".to_string(),
+            help: "available commands: llama-server, gemma-server, serve\ndid you mean \"serve\"?"
+                .to_string(),
+        };
+        insta::assert_snapshot!(render_for_snapshot(&err));
+    }
+
+    #[test]
+    fn unknown_profile_renders() {
+        let err = Error::UnknownProfile {
+            profile: "qwen-codr".to_string(),
+            command: "llama-server".to_string(),
+            help: "available profiles: qwen-coder, llama3\ndid you mean \"qwen-coder\"?"
+                .to_string(),
+        };
+        insta::assert_snapshot!(render_for_snapshot(&err));
+    }
+
+    #[test]
+    fn passthrough_not_utf8_renders() {
+        let err = Error::PassthroughNotUtf8 {
+            lossy: "hello\u{fffd}world".to_string(),
         };
         insta::assert_snapshot!(render_for_snapshot(&err));
     }
