@@ -68,7 +68,15 @@ llama-server (alias: serve)
 
 ## Install
 
-For now, build from source:
+From [crates.io](https://crates.io/crates/jig-run):
+
+```sh
+cargo install jig-run
+# installs the `jig` binary (the crate is published as `jig-run`
+# because the bare `jig` name is taken by an unrelated utility).
+```
+
+Or build from source:
 
 ```sh
 git clone https://github.com/mb1986/jig
@@ -107,7 +115,7 @@ a single-character key like `m "/path"` becomes `-m /path`; an
 explicit-dash key like `-ngl 999` is passed verbatim. KDL booleans
 toggle flag presence: `flash-attn #true` emits `--flash-attn`,
 `flash-attn #false` suppresses it (even when it would otherwise
-come from defaults). See `SPEC.md` §2.4 / §2.5 for the table.
+come from defaults). See [`SPEC.md`](./SPEC.md) for the full table.
 
 ### Exit codes
 
@@ -124,17 +132,18 @@ come from defaults). See `SPEC.md` §2.4 / §2.5 for the table.
 
 ## Configuration
 
-See [`SPEC.md`](./SPEC.md) for the behavioral specification:
+See [`SPEC.md`](./SPEC.md) for the behavioral specification, which
+covers:
 
-- Lookup precedence (§2.1) — `./jig.kdl` then `./.jig.kdl`, or
-  `--config <PATH>`.
-- Argument model (§2.4) — flags vs positionals, booleans, dash-quoted
+- Config-file lookup precedence (`./jig.kdl` then `./.jig.kdl`, or
+  `--config <PATH>`).
+- The argument model — flags vs positionals, booleans, dash-quoted
   positionals.
-- Prefix synthesis (§2.5) — when keys get `-` vs `--`.
-- Defaults and profiles (§2.7), merge semantics (§2.8) — first-occurrence
-  positioning, `#false` suppression.
-- Constraints (§2.9) — uniqueness, no-leading-dash names.
-- Diagnostic quality (§7.4) — what `jig` errors aim for.
+- Prefix synthesis — when keys get `-` vs `--`.
+- Defaults and profiles, and the merge semantics (first-occurrence
+  positioning, `#false` suppression).
+- Constraints (uniqueness, no-leading-dash names).
+- Diagnostic quality — what `jig` errors aim for.
 
 [`IMPLEMENTATION.md`](./IMPLEMENTATION.md) covers the build, type
 design, and dependency choices.
