@@ -6,7 +6,19 @@ rust-version = "1.85"
 license = "MIT"
 description = "Run commands with arguments taken from a declarative configuration file."
 repository = "https://github.com/mb1986/jig"
+homepage = "https://github.com/mb1986/jig"
 readme = "README.md"
+keywords = ["cli", "command-runner", "profile", "kdl", "wrapper"]
+categories = ["command-line-utilities", "development-tools"]
+include = [
+    "src/**/*.rs",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "SPEC.md",
+    "IMPLEMENTATION.md",
+]
 
 [[bin]]
 name = "jig"
