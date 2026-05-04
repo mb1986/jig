@@ -632,3 +632,24 @@ fn version_flag_prints_version() {
         .code(0)
         .stdout(predicate::str::contains("jig"));
 }
+
+#[test]
+fn dry_run_value_with_embedded_nul_byte_exits_125() {
+    // A NUL byte cannot be shell-quoted, so --dry-run should refuse
+    // rather than emit something that can't be copy-pasted. Since
+    // a NUL also can't survive argv into a child process, this
+    // failure mode is checked here at the dry-run layer.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "foo {\n    label \"hello\\u{0}world\"\n}\n",
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--dry-run")
+        .arg("foo")
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains("NUL byte"));
+}
