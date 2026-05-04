@@ -19,7 +19,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use clap::{CommandFactory, Parser};
+use clap::{CommandFactory, Parser, ValueHint};
 use clap_complete::Shell;
 
 const USAGE_NOTES: &str = "\
@@ -27,9 +27,7 @@ Positional arguments:
   <COMMAND>      Command name or alias from jig.kdl.
   [PROFILE]      Optional profile name within COMMAND.
   [PASSTHROUGH]  Arguments appended verbatim to the resolved command line. May
-                 include a literal `--` and tokens that look like flags.
-
-See SPEC.md §3.1-§3.3 for the full grammar.";
+                 include a literal `--` and tokens that look like flags.";
 
 /// `jig` — run commands with arguments taken from a declarative
 /// configuration file.
@@ -43,24 +41,22 @@ See SPEC.md §3.1-§3.3 for the full grammar.";
 )]
 pub struct Cli {
     /// Use `<PATH>` instead of looking for `jig.kdl` / `.jig.kdl`
-    /// in the current working directory. Per `SPEC.md` §2.1.
-    #[arg(long, value_name = "PATH")]
+    /// in the current working directory.
+    #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath)]
     pub config: Option<PathBuf>,
 
     /// List all configured commands, aliases, and profiles.
-    /// Per `SPEC.md` §3.4 / §7.1.
     #[arg(short = 'l', long)]
     pub list: bool,
 
     /// Print the resolved command (shell-quoted) and exit without
-    /// executing. Per `SPEC.md` §3.4.
+    /// executing.
     #[arg(short = 'n', long)]
     pub dry_run: bool,
 
     /// Generate a shell completion script for `<SHELL>`. Hidden
-    /// from `--help` because it is rarely run directly by humans
-    /// (per `IMPLEMENTATION.md` §9.2). Per Q1, this flag does not
-    /// require a config file.
+    /// from `--help` because it is rarely run directly by humans.
+    /// Does not require a config file.
     #[arg(long, value_name = "SHELL", hide = true)]
     pub completions: Option<Shell>,
 
