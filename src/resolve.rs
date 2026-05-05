@@ -120,9 +120,34 @@ pub fn resolve(config: &Config, name: &str, profile: Option<&str>) -> Result<Res
 }
 
 fn lookup_command<'a>(config: &'a Config, name: &str) -> Result<&'a Command> {
-    if let Some(cmd) = config.commands.iter().find(|c| c.name == name) {
-        return Ok(cmd);
+    // Step 1: count name matches.
+    let name_matches: Vec<&Command> = config.commands.iter().filter(|c| c.name == name).collect();
+
+    if name_matches.len() == 1 {
+        return Ok(name_matches[0]);
     }
+    if name_matches.len() > 1 {
+        // Validation guarantees every duplicated occurrence has an
+        // alias; list them so the user can pick one.
+        let aliases: Vec<&str> = name_matches
+            .iter()
+            .map(|c| {
+                c.alias.as_deref().expect(
+                    "invariant: validation requires every duplicated command name to have an alias",
+                )
+            })
+            .collect();
+        return Err(Error::AmbiguousCommand {
+            name: name.to_string(),
+            help: format!(
+                "command name {name:?} appears more than once; invoke via one of its aliases: {}",
+                aliases.join(", ")
+            ),
+        });
+    }
+
+    // Step 2: alias lookup. Validation enforces alias uniqueness so
+    // at most one match is possible.
     if let Some(cmd) = config
         .commands
         .iter()
@@ -131,10 +156,18 @@ fn lookup_command<'a>(config: &'a Config, name: &str) -> Result<&'a Command> {
         return Ok(cmd);
     }
 
-    // Build a single search list of names + aliases for did-you-mean.
+    // Step 3: unknown. Build the did-you-mean candidate list from
+    // names that are valid lookup keys (single-occurrence names) plus
+    // every alias.
+    let mut name_counts: HashMap<&str, usize> = HashMap::new();
+    for cmd in &config.commands {
+        *name_counts.entry(cmd.name.as_str()).or_insert(0) += 1;
+    }
     let mut all: Vec<&str> = Vec::new();
     for cmd in &config.commands {
-        all.push(&cmd.name);
+        if name_counts[cmd.name.as_str()] == 1 {
+            all.push(&cmd.name);
+        }
         if let Some(alias) = &cmd.alias {
             all.push(alias);
         }
@@ -258,6 +291,75 @@ mod tests {
         let cfg = parse("llama-server \"serve\" {\n  host \"0.0.0.0\"\n}\n");
         let r = resolve(&cfg, "serve", None).unwrap();
         assert_eq!(r.program, "llama-server");
+    }
+
+    #[test]
+    fn lookup_by_alias_when_name_is_duplicated() {
+        let cfg = parse(
+            r#"llama-server "serve1" {
+                a #true
+            }
+            llama-server "serve2" {
+                b #true
+            }"#,
+        );
+        let r = resolve(&cfg, "serve1", None).unwrap();
+        assert_eq!(r.program, "llama-server");
+        assert_eq!(flatten(&r), vec![("-a".into(), String::new())]);
+
+        let r = resolve(&cfg, "serve2", None).unwrap();
+        assert_eq!(r.program, "llama-server");
+        assert_eq!(flatten(&r), vec![("-b".into(), String::new())]);
+    }
+
+    #[test]
+    fn bare_name_lookup_of_duplicated_command_is_ambiguous() {
+        let cfg = parse(
+            r#"llama-server "serve1" { a #true }
+            llama-server "serve2" { b #true }"#,
+        );
+        let err = resolve(&cfg, "llama-server", None).unwrap_err();
+        let Error::AmbiguousCommand { name, help } = err else {
+            panic!("expected AmbiguousCommand");
+        };
+        assert_eq!(name, "llama-server");
+        assert!(help.contains("serve1"));
+        assert!(help.contains("serve2"));
+    }
+
+    #[test]
+    fn ambiguous_help_lists_all_aliases_when_three_duplicates() {
+        let cfg = parse(
+            r#"foo "a" {}
+            foo "b" {}
+            foo "c" {}"#,
+        );
+        let err = resolve(&cfg, "foo", None).unwrap_err();
+        let Error::AmbiguousCommand { help, .. } = err else {
+            panic!("expected AmbiguousCommand");
+        };
+        assert!(help.contains('a'));
+        assert!(help.contains('b'));
+        assert!(help.contains('c'));
+    }
+
+    #[test]
+    fn duplicated_name_excluded_from_did_you_mean() {
+        // `foo` is duplicated, so a typo close to `foo` should not
+        // suggest it — typing `foo` would have produced an ambiguous
+        // error rather than a working invocation.
+        let cfg = parse(
+            r#"foo "f1" {}
+            foo "f2" {}"#,
+        );
+        let err = resolve(&cfg, "fop", None).unwrap_err();
+        let Error::UnknownCommand { help, .. } = err else {
+            panic!("expected UnknownCommand");
+        };
+        assert!(
+            !help.contains("\"foo\""),
+            "did-you-mean should not suggest a duplicated bare name; got: {help}"
+        );
     }
 
     #[test]

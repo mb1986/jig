@@ -149,7 +149,7 @@ fn list_requires_config_to_exist() {
 // --- §2.9 constraint enforcement (Step 4) ---
 
 #[test]
-fn duplicate_command_name_exits_125() {
+fn duplicate_command_name_without_alias_exits_125() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("jig.kdl"), "foo {}\nfoo {}\n").unwrap();
     jig()
@@ -157,6 +157,60 @@ fn duplicate_command_name_exits_125() {
         .assert()
         .code(125)
         .stderr(predicate::str::contains("defined more than once"));
+}
+
+#[test]
+fn duplicate_command_name_with_distinct_aliases_lists_both() {
+    // Two top-level entries that share the binary name but have
+    // distinct aliases — both must be reachable via their aliases.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "llama-server \"serve1\" {\n    a #true\n}\nllama-server \"serve2\" {\n    b #true\n}\n",
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--list")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("llama-server (alias: serve1)"))
+        .stdout(predicate::str::contains("llama-server (alias: serve2)"));
+}
+
+#[test]
+fn alias_lookup_of_duplicated_command_runs() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "llama-server \"serve1\" {\n    a #true\n}\nllama-server \"serve2\" {\n    b #true\n}\n",
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--dry-run")
+        .arg("serve2")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("llama-server -b"));
+}
+
+#[test]
+fn bare_name_lookup_of_duplicated_command_exits_125() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "llama-server \"serve1\" {\n    a #true\n}\nllama-server \"serve2\" {\n    b #true\n}\n",
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("llama-server")
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains("ambiguous"))
+        .stderr(predicate::str::contains("serve1"))
+        .stderr(predicate::str::contains("serve2"));
 }
 
 #[test]

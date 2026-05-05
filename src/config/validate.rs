@@ -4,10 +4,13 @@
 //! This module handles the semantic constraints listed in §2.9:
 //!
 //! - Names (commands, aliases, profiles) must not start with `-`.
-//! - Command names must be unique across the file.
+//! - A command name may appear more than once, but only when every
+//!   occurrence declares an alias (so each entry is reachable).
 //! - Aliases must be unique across the file.
-//! - A command name and an alias on a *different* command may not
-//!   collide (a command may declare an alias equal to its own name).
+//! - An alias may not collide with any non-duplicated command name
+//!   (a command may declare an alias equal to its own name when
+//!   that name is unique). A duplicated command name may not be
+//!   used as an alias anywhere.
 //! - Profile names must be unique within a command.
 //! - Each flag key, in its resolved CLI form (post-§2.5), must
 //!   appear at most once within a single scope (a command's
@@ -77,21 +80,46 @@ fn check_no_leading_dash(config: &Config, src: &NamedSource<String>) -> Result<(
 }
 
 fn check_command_and_alias_names(config: &Config, src: &NamedSource<String>) -> Result<()> {
-    // Pass 1: command-name uniqueness.
-    let mut seen_commands: HashMap<&str, SourceSpan> = HashMap::new();
+    // Pass A: collect all occurrences of each command name. A name
+    // may now appear more than once, so we keep every span — the
+    // duplicate-without-alias check below needs them, and so does
+    // the alias-vs-name collision check.
+    let mut name_occurrences: HashMap<&str, Vec<(SourceSpan, Option<SourceSpan>)>> = HashMap::new();
     for cmd in &config.commands {
-        if let Some(&first) = seen_commands.get(cmd.name.as_str()) {
-            return Err(Error::DuplicateCommand {
+        name_occurrences
+            .entry(cmd.name.as_str())
+            .or_default()
+            .push((cmd.name_span, cmd.alias_span));
+    }
+
+    // Pass A.1: every occurrence of a duplicated name must have an
+    // alias — otherwise the entry is unreachable. Report the spans
+    // in source order so the rendered diagnostic reads naturally.
+    for cmd in &config.commands {
+        let occurrences = name_occurrences
+            .get(cmd.name.as_str())
+            .expect("invariant: name_occurrences is keyed by every command's name");
+        if occurrences.len() > 1 && cmd.alias.is_none() {
+            let other = occurrences
+                .iter()
+                .map(|(span, _)| *span)
+                .find(|s| *s != cmd.name_span)
+                .expect("invariant: occurrences.len() > 1 guarantees a different span exists");
+            let (first, second) = if other.offset() < cmd.name_span.offset() {
+                (other, cmd.name_span)
+            } else {
+                (cmd.name_span, other)
+            };
+            return Err(Error::DuplicateCommandWithoutAlias {
                 name: cmd.name.clone(),
                 src: src.clone(),
                 first,
-                second: cmd.name_span,
+                second,
             });
         }
-        seen_commands.insert(&cmd.name, cmd.name_span);
     }
 
-    // Pass 2: alias uniqueness.
+    // Pass B: alias uniqueness across the file.
     let mut seen_aliases: HashMap<&str, SourceSpan> = HashMap::new();
     for cmd in &config.commands {
         if let (Some(alias), Some(span)) = (&cmd.alias, cmd.alias_span) {
@@ -107,15 +135,33 @@ fn check_command_and_alias_names(config: &Config, src: &NamedSource<String>) -> 
         }
     }
 
-    // Pass 3: cross-command alias-vs-command-name collision. A
-    // command's alias matching its own command name is allowed
-    // (harmless redundancy — see SPEC.md §2.9).
+    // Pass C: alias-vs-command-name collision.
+    //
+    //   - If the alias matches no command name, no collision.
+    //   - If the alias matches a duplicated command name (>1 entry),
+    //     reject — using the alias would shadow the bare-name
+    //     ambiguity.
+    //   - If the alias matches a unique command name and that name
+    //     belongs to the same command, it's a self-alias and is
+    //     allowed (harmless redundancy).
+    //   - If the alias matches a unique command name belonging to a
+    //     different command, reject.
     for cmd in &config.commands {
         if let (Some(alias), Some(alias_span)) = (&cmd.alias, cmd.alias_span) {
-            if alias == &cmd.name {
+            let Some(occurrences) = name_occurrences.get(alias.as_str()) else {
                 continue;
-            }
-            if let Some(&command_span) = seen_commands.get(alias.as_str()) {
+            };
+            if occurrences.len() > 1 {
+                // Prefer pointing at a different occurrence than
+                // `cmd` itself, so the diagnostic exposes the
+                // duplication. Matters for self-aliasing on a
+                // duplicate, where `cmd`'s name span sits next to
+                // the alias literal on the same line.
+                let command_span = occurrences
+                    .iter()
+                    .map(|(span, _)| *span)
+                    .find(|s| *s != cmd.name_span)
+                    .unwrap_or(occurrences[0].0);
                 return Err(Error::CommandAliasCollision {
                     name: alias.clone(),
                     src: src.clone(),
@@ -123,6 +169,17 @@ fn check_command_and_alias_names(config: &Config, src: &NamedSource<String>) -> 
                     command_span,
                 });
             }
+            // Exactly one occurrence: self-alias if it's this command.
+            let (only_name_span, _) = occurrences[0];
+            if only_name_span == cmd.name_span {
+                continue;
+            }
+            return Err(Error::CommandAliasCollision {
+                name: alias.clone(),
+                src: src.clone(),
+                alias_span,
+                command_span: only_name_span,
+            });
         }
     }
 
@@ -266,13 +323,38 @@ mod tests {
     // --- §2.9 command-name uniqueness ---
 
     #[test]
-    fn duplicate_command_name_rejected() {
+    fn duplicate_command_name_with_distinct_aliases_is_allowed() {
+        // The relaxed rule: same binary, two profile sets, distinct
+        // aliases — both reachable via their aliases.
+        parse_and_validate(
+            r#"llama-server "serve1" {
+                a #true
+            }
+            llama-server "serve2" {
+                b #true
+            }"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn duplicate_command_name_without_alias_rejected() {
         let err = parse_and_validate(
             r"foo {}
             foo {}",
         )
         .unwrap_err();
-        assert!(matches!(err, Error::DuplicateCommand { .. }));
+        assert!(matches!(err, Error::DuplicateCommandWithoutAlias { .. }));
+    }
+
+    #[test]
+    fn duplicate_command_one_alias_missing_rejected() {
+        let err = parse_and_validate(
+            r#"foo "x" {}
+            foo {}"#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::DuplicateCommandWithoutAlias { .. }));
     }
 
     // --- §2.9 alias uniqueness ---
@@ -294,6 +376,68 @@ mod tests {
         let err = parse_and_validate(
             r#"serve {}
             llama-server "serve" {}"#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::CommandAliasCollision { .. }));
+    }
+
+    #[test]
+    fn alias_equal_to_duplicated_command_name_rejected() {
+        // `foo` appears twice (with distinct aliases), so no other
+        // command may use `foo` as its alias.
+        let err = parse_and_validate(
+            r#"foo "x" {}
+            foo "y" {}
+            cool "foo" {}"#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::CommandAliasCollision { .. }));
+    }
+
+    #[test]
+    fn three_duplicates_without_alias_rejected() {
+        let err = parse_and_validate(
+            r"foo {}
+            foo {}
+            foo {}",
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::DuplicateCommandWithoutAlias { .. }));
+    }
+
+    #[test]
+    fn duplicate_names_plus_duplicate_aliases_reports_no_alias_first() {
+        // `foo` is duplicated and a third occurrence reuses an
+        // existing alias. Pass A.1 fires before Pass B, so the
+        // missing-alias case is reported (the duplicated alias would
+        // be reported next if this were fixed). This pins the order.
+        let err = parse_and_validate(
+            r#"foo "x" {}
+            foo {}
+            foo "x" {}"#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::DuplicateCommandWithoutAlias { .. }));
+    }
+
+    #[test]
+    fn duplicate_aliases_without_missing_alias_still_caught() {
+        // All occurrences have aliases (so Pass A.1 doesn't fire)
+        // but two share an alias — Pass B reports it.
+        let err = parse_and_validate(
+            r#"foo "x" {}
+            foo "x" {}"#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::DuplicateAlias { .. }));
+    }
+
+    #[test]
+    fn self_alias_on_duplicated_name_rejected() {
+        // Self-aliasing is allowed only when the name is unique.
+        let err = parse_and_validate(
+            r#"foo "foo" {}
+            foo "bar" {}"#,
         )
         .unwrap_err();
         assert!(matches!(err, Error::CommandAliasCollision { .. }));

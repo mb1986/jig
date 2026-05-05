@@ -1,0 +1,7 @@
+---
+source: src/errors.rs
+assertion_line: 492
+expression: render_for_snapshot(&err)
+---
+  × command name "llama-server" is ambiguous
+  help: command name "llama-server" appears more than once; invoke via one of its aliases: serve-coder, serve-chat

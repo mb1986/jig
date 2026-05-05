@@ -145,20 +145,25 @@ pub enum Error {
         span: SourceSpan,
     },
 
-    /// Two top-level commands share the same name. Per `SPEC.md`
-    /// §2.9.
-    #[error("command {name:?} is defined more than once")]
-    #[diagnostic(help("each command name may appear at most once"))]
-    DuplicateCommand {
+    /// Two top-level commands share the same name but at least one
+    /// occurrence is missing an alias. Per `SPEC.md` §2.9 a
+    /// duplicated command name is permitted only when every
+    /// occurrence has a distinct alias — otherwise the unaliased
+    /// entry is unreachable.
+    #[error("command {name:?} is defined more than once but at least one occurrence has no alias")]
+    #[diagnostic(help(
+        "when a command name appears more than once, every occurrence must declare an alias so each entry can still be invoked"
+    ))]
+    DuplicateCommandWithoutAlias {
         /// The offending command name.
         name: String,
         /// Source the spans point into.
         #[source_code]
         src: NamedSource<String>,
-        /// Span of the first occurrence.
-        #[label("first defined here")]
+        /// Span of the chronologically earlier occurrence.
+        #[label("defined here")]
         first: SourceSpan,
-        /// Span of the second occurrence.
+        /// Span of the chronologically later occurrence.
         #[label("also defined here")]
         second: SourceSpan,
     },
@@ -252,6 +257,20 @@ pub enum Error {
         name: String,
         /// Pre-formatted help with available names and an
         /// optional did-you-mean suggestion.
+        #[help]
+        help: String,
+    },
+
+    /// The CLI invocation named a command name that appears more
+    /// than once in the config. Per `SPEC.md` §2.9 such names are
+    /// not valid lookup keys — the user must invoke via one of the
+    /// aliases. CLI-origin error: no source span.
+    #[error("command name {name:?} is ambiguous")]
+    AmbiguousCommand {
+        /// The ambiguous command name as typed.
+        name: String,
+        /// Pre-formatted help listing the aliases of the duplicate
+        /// entries.
         #[help]
         help: String,
     },
@@ -354,12 +373,13 @@ impl Error {
             | Self::NodeHasProperties { .. }
             | Self::ExpectedString { .. }
             | Self::LeadingDashName { .. }
-            | Self::DuplicateCommand { .. }
+            | Self::DuplicateCommandWithoutAlias { .. }
             | Self::DuplicateAlias { .. }
             | Self::CommandAliasCollision { .. }
             | Self::DuplicateProfile { .. }
             | Self::DuplicateFlagKey { .. }
             | Self::UnknownCommand { .. }
+            | Self::AmbiguousCommand { .. }
             | Self::UnknownProfile { .. }
             | Self::MissingCommand
             | Self::PassthroughNotUtf8 { .. }
@@ -451,13 +471,24 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_command_renders() {
+    fn duplicate_command_without_alias_renders() {
         let src = NamedSource::new("jig.kdl", "llama-server {}\nllama-server {}\n".to_string());
-        let err = Error::DuplicateCommand {
+        let err = Error::DuplicateCommandWithoutAlias {
             name: "llama-server".to_string(),
             src,
             first: SourceSpan::from((0, 12)),
             second: SourceSpan::from((16, 12)),
+        };
+        insta::assert_snapshot!(render_for_snapshot(&err));
+    }
+
+    #[test]
+    fn ambiguous_command_renders() {
+        let err = Error::AmbiguousCommand {
+            name: "llama-server".to_string(),
+            help: "command name \"llama-server\" appears more than once; \
+                   invoke via one of its aliases: serve-coder, serve-chat"
+                .to_string(),
         };
         insta::assert_snapshot!(render_for_snapshot(&err));
     }

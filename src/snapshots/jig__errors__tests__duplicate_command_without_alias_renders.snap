@@ -1,14 +1,15 @@
 ---
 source: src/errors.rs
+assertion_line: 482
 expression: render_for_snapshot(&err)
 ---
-  × command "llama-server" is defined more than once
+  × command "llama-server" is defined more than once but at least one occurrence has no alias
    ╭─[jig.kdl:1:1]
  1 │ llama-server {}
    · ──────┬─────
-   ·       ╰── first defined here
+   ·       ╰── defined here
  2 │ llama-server {}
    · ──────┬─────
    ·       ╰── also defined here
    ╰────
-  help: each command name may appear at most once
+  help: when a command name appears more than once, every occurrence must declare an alias so each entry can still be invoked

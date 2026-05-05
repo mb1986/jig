@@ -289,9 +289,9 @@ some-tool {
 
 ### 2.9 Constraints and errors
 
-- Command names must be unique across the file. Duplicate command names are a parse error.
+- A command name may appear more than once across the file. If a command name appears more than once, **every** occurrence must declare an alias, and those aliases must all be distinct (per the alias uniqueness rule below). A duplicated command name is **not** a valid lookup key — invocations of that command must use one of its aliases. A command name that appears exactly once may be invoked either by that name or (if present) by its alias.
 - A command's alias (if present) must be unique across the file. Duplicate aliases are a parse error.
-- A command name and an alias **on a different command** may not collide (e.g. command `serve` and an alias `serve` on a different command). A command may, however, declare an alias equal to its own name (e.g. `foo "foo" {...}`); this is harmless redundancy and not a collision.
+- An alias may not collide with any non-duplicated command name in the file. A command may declare an alias equal to its own name (e.g. `foo "foo" {...}`) when that name appears exactly once; this is harmless redundancy and not a collision. A duplicated command name may not be used as an alias anywhere (including as one of its own occurrences' alias), since that would silently shadow the bare-name ambiguity.
 - Within a command, profile names must be unique. Duplicates are a parse error.
 - Within a single scope (a command's defaults, or a single profile's body), each flag key must appear at most once **in its resolved CLI form** — i.e. after the §2.5 prefix synthesis. For example, `host "a"` and `--host "b"` both resolve to `--host` and are duplicates. Duplicate flag keys within the same scope are a parse error. (Positionals naturally have no key and may repeat freely.)
 - Command names, aliases, and profile names must not start with `-` (would be ambiguous with `jig`'s own flags).
@@ -307,7 +307,7 @@ jig [JIG_FLAGS]... <command-or-alias> [profile] [PASSTHROUGH]...
 ```
 
 - `JIG_FLAGS`: flags consumed by `jig` itself. Must appear **before** the command name.
-- `<command-or-alias>`: matches either a command name or an alias from the config. Lookup checks command names first, then aliases (per §4 step 3); collisions between a command name and an alias are forbidden by §2.9, so the precedence has no observable effect.
+- `<command-or-alias>`: matches either a command name or an alias from the config. Lookup checks command names first, then aliases (per §4 step 3). When a command name appears more than once, the bare name is not a valid lookup key — using it produces an "ambiguous command name" error that lists the available aliases.
 - `[profile]`: optional profile name. If omitted, only command defaults are used.
 - `[PASSTHROUGH]`: any further arguments are appended verbatim to the resolved command line.
 
@@ -382,9 +382,9 @@ Given `jig <name> [profile] [passthrough...]`:
 1. Locate config file (§2.1). Error if not found.
 2. Parse KDL. Error on syntax errors or constraint violations (§2.9).
 3. Look up `<name>`:
-   - First match against command names.
-   - If no match, match against aliases.
-   - If no match, error: "unknown command or alias: <name>".
+   - First, count commands whose name equals `<name>`. If exactly one, that's the match. If more than one, error: "command name `<name>` is ambiguous"; the help lists the aliases of the duplicated entries.
+   - Otherwise, find the unique command (if any) whose alias equals `<name>`. If found, that's the match.
+   - Otherwise, error: "unknown command or alias: `<name>`".
 4. If `[profile]` is provided:
    - Look up profile within the matched command. If not found, error: "unknown profile <profile> for command <command>".
 5. Build resolved argument list per §2.8:
@@ -531,6 +531,34 @@ mytool {
 | `jig mytool enabled-true`        | `mytool --enabled true` |
 | `jig mytool enabled-false`       | `mytool --enabled false` |
 | `jig mytool enabled-flag`        | `mytool --enabled` |
+
+### 5.5 Same binary, multiple profile sets
+
+Two top-level entries may share a command name when each declares a distinct alias. The shared name is then no longer a valid lookup key — invocation must go through one of the aliases:
+
+```kdl
+llama-server "serve-coder" {
+    host "0.0.0.0"
+    port 8090
+    qwen-coder {
+        m "/models/qwen-coder.gguf"
+    }
+}
+
+llama-server "serve-chat" {
+    host "0.0.0.0"
+    port 8091
+    llama3 {
+        m "/models/llama3.gguf"
+    }
+}
+```
+
+| Command                              | Resolved |
+|--------------------------------------|----------|
+| `jig serve-coder qwen-coder`         | `llama-server --host 0.0.0.0 --port 8090 -m /models/qwen-coder.gguf` |
+| `jig serve-chat llama3`              | `llama-server --host 0.0.0.0 --port 8091 -m /models/llama3.gguf` |
+| `jig llama-server`                   | error: ambiguous command name; use one of `serve-coder`, `serve-chat` |
 
 ## 6. Out of Scope for v1
 
