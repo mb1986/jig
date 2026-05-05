@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- A command name may now appear more than once across the config, as long
+  as every occurrence declares a distinct alias. Duplicated names are no
+  longer valid lookup keys — invocations must use one of the aliases. A
+  command name that appears exactly once continues to be a valid lookup
+  key (no behavior change for existing configs). A new `AmbiguousCommand`
+  diagnostic is raised when the bare form of a duplicated name is invoked.
+
 ## [0.1.0] — 2026-05-04
 
 Initial release. v1, Unix only (Linux and macOS).
