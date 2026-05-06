@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Repeated flag keys are now allowed within a scope. The merge algorithm
+  in SPEC §2.8 picks single-mode (≤ 1 unmarked occurrence on each side →
+  v1 first-occurrence positioning + profile-value override) or repeat
+  mode (otherwise → emit every unmarked occurrence at its source
+  position) per key. This unblocks tools that legitimately accept the
+  same flag more than once: `gcc -I /a -I /b`, `curl --header A --header B`,
+  count flags like `-v -v -v`. v1 configs resolve byte-identically.
+- Profile-side `#false` for a key now clears every default occurrence of
+  that key (not just one). Combined with subsequent `K newvalue` lines
+  this is the markerless "replace defaults" idiom: `bare { I #false }`
+  wipes a multi-default `-I` list; `custom { I #false; I "/mine" }`
+  replaces it with one new entry.
+- `+` flag-key prefix as the explicit append marker (SPEC §2.5 rule 0).
+  Writing `+I "/proj"` in a profile forces that occurrence to emit at
+  its own position rather than collapsing with an unmarked default of
+  the same key. This handles the only case the multiplicity rule cannot
+  disambiguate: a single default plus a single profile entry that should
+  *add* rather than *replace*.
+
+### Removed
+
+- The `DuplicateFlagKey` diagnostic (and the §2.9 constraint behind it)
+  is gone. Repeating a key is no longer a parse error.
+
 ## [0.2.0] — 2026-05-06
 
 ### Added
