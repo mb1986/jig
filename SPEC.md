@@ -119,9 +119,21 @@ These are passed through verbatim as positional arguments. There is no ambiguity
 
 The mapping from key name to CLI flag is:
 
-1. If the key starts with `-` or `--`, it is passed verbatim.
+0. If the key starts with `+`, the leading `+` is stripped and the occurrence is marked as an **explicit append** (see §2.8). The remaining text is then processed by rules 1–3 to determine the resolved CLI form. The marker applies only to flag nodes (those with a value); on a positional node the leading `+` is part of the literal value.
+1. If the (post-rule-0) key starts with `-` or `--`, it is passed verbatim.
 2. Otherwise, if the key is exactly **1 character**, prefix with `-` (single dash).
 3. Otherwise (2+ characters), prefix with `--` (double dash).
+
+Rule 0 examples:
+
+| Source             | Marked? | Resolved CLI |
+|--------------------|---------|--------------|
+| `+I "/p"`          | yes     | `-I /p`      |
+| `+host "x"`        | yes     | `--host x`   |
+| `+-ngl 999`        | yes     | `-ngl 999`   |
+| `+--explicit "v"`  | yes     | `--explicit v` |
+
+A bare `+` with no key text after it is a parse error. A leading `+` on a command, alias, or profile name is also a parse error (§2.9), since names of any kind cannot start with `+`.
 
 Rule 1 is the escape hatch for non-POSIX flag conventions like llama.cpp's `-ngl`, `-ts`, `-c:v`, etc.
 
@@ -205,24 +217,33 @@ The `verbose` default is always emitted because it lives outside any profile. Ea
 
 ### 2.8 Merge semantics
 
-When `jig <command> <profile>` is invoked, the resolved argument list is built by a **single source-order walk** of the command node's children:
+When `jig <command> <profile>` is invoked, the resolved argument list is built in three steps:
 
 1. **Walk the command's children in source order.** For each child:
-   - If the child is a default argument (flag or positional), emit it.
-   - If the child is the **selected** profile, walk its children in source order, emitting each.
+   - If the child is a default argument (flag or positional), emit it as a candidate.
+   - If the child is the **selected** profile, walk its children in source order, emitting each as a candidate from the profile side.
    - If the child is some **other** profile, skip it entirely.
 
-This produces an ordered list of candidate arguments. Two transformations then apply:
+   This produces an ordered list of candidate arguments. Each flag candidate carries its value, its `+` marker (set or unset, per §2.5 rule 0), and whether it came from defaults or the selected profile.
 
-2. **Flag override (first-occurrence positioning).** If the same flag key appears more than once in the candidate list (which can happen when both defaults and the selected profile contribute a value for that key), all occurrences except the first are removed, and the first occurrence's value is replaced with the value from the **profile** (if the profile contributed a value for that key) or the **default** (if only defaults did).
+2. **Per-key resolution.** Group flag candidates by their resolved CLI form (after §2.5 prefix synthesis), then for each key apply this rule:
 
-   In other words: the **position** of the merged flag is the position of its first occurrence in the source-order walk; the **value** is the profile's if present, otherwise the default's.
+   1. **Suppression.** If any profile-side candidate for the key has value `#false` (regardless of whether it carries the `+` marker), drop *every* default-side candidate for the key and drop the `#false` profile entries; profile-side candidates with non-`#false` values are kept regardless of marker. Otherwise, drop just those default-side or profile-side candidates whose value is `#false`. (`#false` is a universal "remove this flag" marker; profile-side use additionally clears any defaults of the same key.)
+   2. **Marker partition.** Among the survivors, separate `+`-marked entries from unmarked entries.
+   3. **Marked entries always emit.** Each `+`-marked candidate emits at its own source position with its own value. Marked entries do not collapse with anything.
+   4. **Unmarked entries pick a mode.** Let `D_unmarked` and `P_unmarked` be the surviving unmarked entries on the default and profile sides respectively.
+      - If `|D_unmarked| ≤ 1` *and* `|P_unmarked| ≤ 1`: **single mode** (v1 behavior). Emit at most one occurrence, at the **first-occurrence source position** (the default's index if `D_unmarked` is non-empty, otherwise the profile's), with the profile's value if `P_unmarked` is non-empty, otherwise the default's.
+      - Otherwise (either side has two or more unmarked entries): **repeat mode**. Every unmarked occurrence emits at its own source position. No collapsing.
 
-3. **Suppression.** Any flag whose final resolved value is the boolean `#false` is dropped from the resolved command. This applies regardless of whether the default's value was a boolean, a string, or a number — `#false` is a universal "remove this flag" marker.
+3. **Assemble.** Walk the candidate list in source order. Positionals always emit at their own position; flag candidates emit iff the per-key resolution kept them.
 
 Positionals are not subject to override or suppression. They are emitted at the position they were written, in source order, as part of step 1.
 
-#### 2.8.1 First-occurrence positioning examples
+The single-mode case (≤ 1 unmarked occurrence on each side) is the v1 idiom: a default sets a flag and a profile optionally overrides it. Repeat mode is for tools that legitimately accept the same flag more than once (e.g. `gcc -I /a -I /b`, `curl --header A --header B`, count flags like `-v -v -v`). The `+` marker is the explicit knob for the case the multiplicity rule cannot disambiguate: a single default plus a single profile entry that should *add* rather than *replace* (§2.8.4).
+
+#### 2.8.1 First-occurrence positioning (single mode)
+
+When both sides contribute at most one unmarked occurrence, the merged occurrence sits at the position of its first appearance in the walk:
 
 ```kdl
 some-tool {
@@ -235,9 +256,7 @@ some-tool {
 }
 ```
 
-`jig some-tool fast` → walk produces `[timeout=10, verbose=true, timeout=5]` → first-occurrence collapse with profile value → `[timeout=5, verbose=true]` → resolved: `some-tool --timeout 5 --verbose`
-
-The `--timeout` flag stays at the *default's* position (where `timeout` was first encountered in the walk), but takes the *profile's* value.
+`jig some-tool fast` → candidates `[timeout=10 (default), verbose=true (default), timeout=5 (profile)]` → single mode for `--timeout` → emit at default's position with profile's value → `some-tool --timeout 5 --verbose`.
 
 ```kdl
 some-tool {
@@ -249,13 +268,11 @@ some-tool {
 }
 ```
 
-`jig some-tool fast` → walk produces `[timeout=5, timeout=10, verbose=true]` → first-occurrence collapse → `[timeout=5, verbose=true]` → resolved: `some-tool --timeout 5 --verbose`
+`jig some-tool fast` → single mode → `--timeout` emits at the profile's position (the first one walked) with the profile's value → `some-tool --timeout 5 --verbose`.
 
-Here the profile is written first, so `--timeout` ends up at the profile's position.
+#### 2.8.2 Cross-type override examples (single mode)
 
-#### 2.8.2 Cross-type override examples
-
-The merge rules apply uniformly across value types. A profile may override a default with a different type of value:
+The single-mode rule applies uniformly across value types. A profile may override a default with a different type of value:
 
 ```kdl
 some-tool {
@@ -287,14 +304,113 @@ some-tool {
 | `jig some-tool loud`          | `some-tool --xxx verbose-mode --timeout 5 --verbose` |
 | `jig some-tool flag-form`     | `some-tool --xxx --timeout 30 --verbose` |
 
+#### 2.8.3 Repeat mode
+
+When either side contributes two or more unmarked occurrences of the same key, every unmarked occurrence emits at its own source position:
+
+```kdl
+gcc {
+    I "/usr/include"
+    I "/opt/include"
+
+    project-a {
+        I "/proj/a/include"
+    }
+}
+```
+
+| Command                          | Resolved |
+|----------------------------------|----------|
+| `jig gcc`                        | `gcc -I /usr/include -I /opt/include` |
+| `jig gcc project-a`              | `gcc -I /usr/include -I /opt/include -I /proj/a/include` |
+
+Count flags fall out of the same rule:
+
+```kdl
+some-tool {
+    v #true
+    v #true
+    v #true
+}
+```
+
+`jig some-tool` → `some-tool -v -v -v`.
+
+A profile can use `#false` to clear all defaults of the same key — the suppression rule above ensures profile-side `#false` wipes the defaults' list. To replace a default list with a different one, write `K #false` followed by the new entries:
+
+```kdl
+gcc {
+    I "/default"
+
+    bare    { I #false }
+    custom  {
+        I #false
+        I "/mine"
+    }
+}
+```
+
+| Command            | Resolved |
+|--------------------|----------|
+| `jig gcc`          | `gcc -I /default` |
+| `jig gcc bare`     | `gcc` |
+| `jig gcc custom`   | `gcc -I /mine` |
+
+#### 2.8.4 Explicit append marker
+
+The multiplicity rule in §2.8 step 2.4 cannot disambiguate one specific case: a single unmarked default plus a single unmarked profile entry that the user wants to *add* rather than *replace*. The `+` marker (§2.5 rule 0) is the explicit knob for that case. A `+`-prefixed flag always emits at its own position and never collapses with unmarked occurrences:
+
+```kdl
+gcc {
+    I "/usr/include"
+
+    proj-extras {
+        +I "/proj/include"
+    }
+}
+```
+
+`jig gcc proj-extras` → `gcc -I /usr/include -I /proj/include`.
+
+Without the `+`, the same shape would be single mode and `--I /proj/include` would replace the default:
+
+```kdl
+gcc {
+    I "/usr/include"
+
+    proj-replace {
+        I "/proj/include"
+    }
+}
+```
+
+`jig gcc proj-replace` → `gcc -I /proj/include`.
+
+The marker can mix with unmarked entries inside a single profile body:
+
+```kdl
+gcc {
+    I "/usr/include"
+
+    mixed {
+        I "/replace"      // unmarked → single-mode override
+        +I "/extra"       // marked → emits separately
+    }
+}
+```
+
+`jig gcc mixed` → `gcc -I /replace -I /extra`.
+
+`+I #false` and unmarked `I #false` apply suppression identically: the `#false` clears defaults regardless of marker (§2.8 step 2.1).
+
 ### 2.9 Constraints and errors
 
 - A command name may appear more than once across the file. If a command name appears more than once, **every** occurrence must declare an alias, and those aliases must all be distinct (per the alias uniqueness rule below). A duplicated command name is **not** a valid lookup key — invocations of that command must use one of its aliases. A command name that appears exactly once may be invoked either by that name or (if present) by its alias.
 - A command's alias (if present) must be unique across the file. Duplicate aliases are a parse error.
 - An alias may not collide with any non-duplicated command name in the file. A command may declare an alias equal to its own name (e.g. `foo "foo" {...}`) when that name appears exactly once; this is harmless redundancy and not a collision. A duplicated command name may not be used as an alias anywhere (including as one of its own occurrences' alias), since that would silently shadow the bare-name ambiguity.
 - Within a command, profile names must be unique. Duplicates are a parse error.
-- Within a single scope (a command's defaults, or a single profile's body), each flag key must appear at most once **in its resolved CLI form** — i.e. after the §2.5 prefix synthesis. For example, `host "a"` and `--host "b"` both resolve to `--host` and are duplicates. Duplicate flag keys within the same scope are a parse error. (Positionals naturally have no key and may repeat freely.)
-- Command names, aliases, and profile names must not start with `-` (would be ambiguous with `jig`'s own flags).
+- Repeated flag keys within a single scope are **allowed**. The merge algorithm in §2.8 picks single-mode vs repeat-mode resolution per key based on the multiplicity of unmarked occurrences across the default and selected-profile sides; the `+` marker (§2.5 rule 0) opts an occurrence out of v1's first-occurrence collapse. (Positionals have no key and may repeat freely.)
+- Command names, aliases, and profile names must not start with `-` (would be ambiguous with `jig`'s own flags) or `+` (reserved for the explicit append marker on flag keys, §2.5).
 
 A profile (a node with children) and a default argument (a node without children) may share the same identifier within a command. They are structurally distinct in the KDL source and play different roles at resolution time, so no collision exists.
 
@@ -389,13 +505,12 @@ Given `jig <name> [profile] [passthrough...]`:
    - Otherwise, error: "unknown command or alias: `<name>`".
 4. If `[profile]` is provided:
    - Look up profile within the matched command. If not found, error: "unknown profile <profile> for command <command>".
-5. Build resolved argument list per §2.8:
+5. Build the resolved argument list per §2.8:
    - Walk the command's children in source order. For each child:
      - If it is a default argument, append it to the candidate list.
      - If it is the selected profile, walk its children in source order, appending each to the candidate list.
      - If it is some other profile, skip.
-   - Apply flag override using first-occurrence positioning: collapse duplicate flag keys to a single entry at the position of the first occurrence, with the profile's value taking precedence over the default's where both contributed.
-   - Drop any flags whose resolved value is the boolean `#false`.
+   - Apply per-key resolution (§2.8 step 2): for each resolved CLI key, suppress per the `#false` rules (profile-side `#false` clears all default occurrences; default-side `#false` drops just itself), partition surviving entries into `+`-marked and unmarked, emit each marked entry at its source position, and resolve unmarked entries in single mode (≤ 1 on each side → v1 first-occurrence positioning with profile-value precedence) or repeat mode (otherwise → emit each unmarked at its source position).
 6. For each remaining flag, format per the flag prefix rules (§2.5). Boolean `#true` flags emit only the flag key (no accompanying value). Positionals emit their literal value.
 7. Append pass-through args at the end (§3.3).
 8. If `--dry-run`: print shell-quoted command line; exit 0.
@@ -562,6 +677,49 @@ llama-server "serve-chat" {
 | `jig serve-chat llama3`              | `llama-server --host 0.0.0.0 --port 8091 -m /models/llama3.gguf` |
 | `jig llama-server`                   | error: ambiguous command name; use one of `serve-coder`, `serve-chat` |
 
+### 5.6 Repeated flags
+
+Tools that accept the same flag more than once (`gcc -I /a -I /b`, `curl --header A --header B`, count flags like `-v -v -v`) are expressed by writing the flag multiple times. The merge algorithm picks repeat mode automatically when either side has two or more unmarked occurrences (§2.8 step 2.4). The `+` marker (§2.5 rule 0) is the explicit knob for the case the multiplicity rule cannot disambiguate: a single default and a single profile entry that should *add* rather than *replace*.
+
+```kdl
+gcc {
+    I "/usr/include"
+    I "/opt/include"
+
+    project-a {
+        I "/proj/a/include"        // repeat mode, appends
+    }
+
+    proj-extras {
+        +I "/extra"                // explicit append against any defaults
+    }
+
+    bare {
+        I #false                    // markerless "clear all defaults"
+    }
+
+    custom {
+        I #false
+        I "/mine"                   // clear, then add
+    }
+}
+
+verbose-tool {
+    v #true
+    v #true
+    v #true
+}
+```
+
+| Command                          | Resolved |
+|----------------------------------|----------|
+| `jig gcc`                        | `gcc -I /usr/include -I /opt/include` |
+| `jig gcc project-a`              | `gcc -I /usr/include -I /opt/include -I /proj/a/include` |
+| `jig gcc proj-extras`            | `gcc -I /usr/include -I /opt/include -I /extra` |
+| `jig gcc bare`                   | `gcc` |
+| `jig gcc custom`                 | `gcc -I /mine` |
+| `jig verbose-tool`               | `verbose-tool -v -v -v` |
+
 ## 6. Out of Scope for v1
 
 The following are deliberately deferred. None of them are precluded by the v1 design.
@@ -671,3 +829,14 @@ error: alias 'serve' is defined more than once
 ```
 
 Implementation note: leverage the `miette` ecosystem (already used by the `kdl` crate) for span-aware diagnostics.
+
+### 7.5 Repeated flag keys
+
+Repeating the same flag key within a scope is **allowed**, not a parse error. The merge algorithm in §2.8 picks the resolution mode per key:
+
+- Single mode (≤ 1 unmarked occurrence on each side) preserves v1's first-occurrence positioning + profile-value override exactly. Every config that worked before this addition continues to resolve byte-identically.
+- Repeat mode (any side with ≥ 2 unmarked occurrences) emits every unmarked occurrence at its source position, supporting `gcc -I /a -I /b`, count flags `-v -v -v`, and similar idioms without any new syntax.
+- Profile-side `#false` clears all default occurrences of the key (asymmetric vs default-side `#false`, which only suppresses its own occurrence). This gives a markerless "replace defaults" idiom: a profile can write `K #false` followed by `K newvalue` to wipe a default list and substitute its own.
+- The `+` marker (§2.5 rule 0) is the explicit knob for the only case the multiplicity rule cannot disambiguate: a single unmarked default plus a single unmarked profile entry that should *add* rather than *replace*. A `+`-prefixed flag always emits at its own source position and never collapses with unmarked occurrences.
+
+The marker is rare by design. Adding a second occurrence anywhere is enough to put the key into repeat mode, where the marker is unnecessary.
