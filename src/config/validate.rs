@@ -3,7 +3,9 @@
 //! The parser handles structural correctness (`SPEC.md` §2.2-§2.6).
 //! This module handles the semantic constraints listed in §2.9:
 //!
-//! - Names (commands, aliases, profiles) must not start with `-`.
+//! - Names (commands, aliases, profiles) must not start with `-`
+//!   (would conflict with `jig`'s own flags) or `+` (reserved for
+//!   the explicit append marker on flag keys, §2.5).
 //! - A command name may appear more than once, but only when every
 //!   occurrence declares an alias (so each entry is reachable).
 //! - Aliases must be unique across the file.
@@ -12,9 +14,10 @@
 //!   that name is unique). A duplicated command name may not be
 //!   used as an alias anywhere.
 //! - Profile names must be unique within a command.
-//! - Each flag key, in its resolved CLI form (post-§2.5), must
-//!   appear at most once within a single scope (a command's
-//!   defaults or one profile body).
+//!
+//! Repeated flag keys within a scope are *allowed*; the resolver
+//! distinguishes single-mode vs repeat-mode merge per `SPEC.md` §2.8
+//! based on multiplicity and the `+` append marker.
 //!
 //! On the first violation found we return an [`Error`] carrying the
 //! relevant source spans for two-span diagnostics per §7.4.
@@ -23,7 +26,7 @@ use std::collections::HashMap;
 
 use miette::{NamedSource, SourceSpan};
 
-use super::{Argument, CommandChild, Config};
+use super::{CommandChild, Config};
 use crate::errors::{Error, Result};
 
 /// Validate `config` against `SPEC.md` §2.9. `src` is attached to
@@ -34,47 +37,51 @@ use crate::errors::{Error, Result};
 /// Returns the first §2.9 violation encountered. See module docs
 /// for the constraint list.
 pub fn validate(config: &Config, src: &NamedSource<String>) -> Result<()> {
-    check_no_leading_dash(config, src)?;
+    check_reserved_name_prefixes(config, src)?;
     check_command_and_alias_names(config, src)?;
     check_profiles_within_each_command(config, src)?;
-    check_flag_keys_within_each_scope(config, src)?;
     Ok(())
 }
 
-fn check_no_leading_dash(config: &Config, src: &NamedSource<String>) -> Result<()> {
+fn check_reserved_name_prefixes(config: &Config, src: &NamedSource<String>) -> Result<()> {
     for cmd in &config.commands {
-        if cmd.name.starts_with('-') {
-            return Err(Error::LeadingDashName {
-                kind: "command",
-                name: cmd.name.clone(),
-                src: src.clone(),
-                span: cmd.name_span,
-            });
-        }
-        if let (Some(alias), Some(span)) = (&cmd.alias, cmd.alias_span)
-            && alias.starts_with('-')
-        {
-            return Err(Error::LeadingDashName {
-                kind: "alias",
-                name: alias.clone(),
-                src: src.clone(),
-                span,
-            });
+        check_name_prefix("command", &cmd.name, cmd.name_span, src)?;
+        if let (Some(alias), Some(span)) = (&cmd.alias, cmd.alias_span) {
+            check_name_prefix("alias", alias, span, src)?;
         }
         for child in &cmd.children {
             if let CommandChild::Profile {
                 name, name_span, ..
             } = child
-                && name.starts_with('-')
             {
-                return Err(Error::LeadingDashName {
-                    kind: "profile",
-                    name: name.clone(),
-                    src: src.clone(),
-                    span: *name_span,
-                });
+                check_name_prefix("profile", name, *name_span, src)?;
             }
         }
+    }
+    Ok(())
+}
+
+fn check_name_prefix(
+    kind: &'static str,
+    name: &str,
+    span: SourceSpan,
+    src: &NamedSource<String>,
+) -> Result<()> {
+    if name.starts_with('-') {
+        return Err(Error::LeadingDashName {
+            kind,
+            name: name.to_string(),
+            src: src.clone(),
+            span,
+        });
+    }
+    if name.starts_with('+') {
+        return Err(Error::LeadingPlusName {
+            kind,
+            name: name.to_string(),
+            src: src.clone(),
+            span,
+        });
     }
     Ok(())
 }
@@ -205,47 +212,6 @@ fn check_profiles_within_each_command(config: &Config, src: &NamedSource<String>
                 }
                 seen.insert(name, *name_span);
             }
-        }
-    }
-    Ok(())
-}
-
-fn check_flag_keys_within_each_scope(config: &Config, src: &NamedSource<String>) -> Result<()> {
-    for cmd in &config.commands {
-        // Defaults scope: every Default(Argument::Flag { .. }) child.
-        let defaults_iter = cmd.children.iter().filter_map(|c| match c {
-            CommandChild::Default(arg) => Some(arg),
-            CommandChild::Profile { .. } => None,
-        });
-        check_scope(defaults_iter, src)?;
-
-        // Each profile body is its own scope.
-        for child in &cmd.children {
-            if let CommandChild::Profile { args, .. } = child {
-                check_scope(args.iter(), src)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn check_scope<'a, I>(args: I, src: &NamedSource<String>) -> Result<()>
-where
-    I: IntoIterator<Item = &'a Argument>,
-{
-    let mut seen: HashMap<String, SourceSpan> = HashMap::new();
-    for arg in args {
-        if let Argument::Flag { key, key_span, .. } = arg {
-            let resolved = key.to_cli_flag();
-            if let Some(&first) = seen.get(&resolved) {
-                return Err(Error::DuplicateFlagKey {
-                    flag: resolved,
-                    src: src.clone(),
-                    first,
-                    second: *key_span,
-                });
-            }
-            seen.insert(resolved, *key_span);
         }
     }
     Ok(())
@@ -470,23 +436,24 @@ mod tests {
         .unwrap();
     }
 
-    // --- §2.9 flag-key uniqueness within scope ---
+    // --- §2.9: flag keys may now repeat within a scope (resolver
+    //     handles single-mode vs repeat-mode merge per §2.8). ---
 
     #[test]
-    fn duplicate_flag_key_in_defaults_rejected() {
-        let err = parse_and_validate(
-            r#"foo {
-                host "a"
-                host "b"
+    fn duplicate_flag_key_in_defaults_is_fine() {
+        // Was a parse error in v0.2; now allowed (gcc-style repeats).
+        parse_and_validate(
+            r#"gcc {
+                I "/usr/include"
+                I "/opt/include"
             }"#,
         )
-        .unwrap_err();
-        assert!(matches!(err, Error::DuplicateFlagKey { .. }));
+        .unwrap();
     }
 
     #[test]
-    fn duplicate_flag_key_in_profile_rejected() {
-        let err = parse_and_validate(
+    fn duplicate_flag_key_in_profile_is_fine() {
+        parse_and_validate(
             r"foo {
                 fast {
                     timeout 5
@@ -494,47 +461,13 @@ mod tests {
                 }
             }",
         )
-        .unwrap_err();
-        assert!(matches!(err, Error::DuplicateFlagKey { .. }));
-    }
-
-    #[test]
-    fn resolved_form_collision_rejected() {
-        // `host` and `--host` both resolve to `--host`.
-        let err = parse_and_validate(
-            r#"foo {
-                host "a"
-                --host "b"
-            }"#,
-        )
-        .unwrap_err();
-        let Error::DuplicateFlagKey { flag, .. } = &err else {
-            panic!("expected DuplicateFlagKey, got {err:?}");
-        };
-        assert_eq!(flag, "--host");
-    }
-
-    #[test]
-    fn short_form_collision_rejected() {
-        // `m` resolves to `-m`, same as `-m`.
-        let err = parse_and_validate(
-            r#"foo {
-                m "/p"
-                -m "/q"
-            }"#,
-        )
-        .unwrap_err();
-        let Error::DuplicateFlagKey { flag, .. } = &err else {
-            panic!("expected DuplicateFlagKey");
-        };
-        assert_eq!(flag, "-m");
+        .unwrap();
     }
 
     #[test]
     fn flag_key_collision_across_scopes_is_fine() {
-        // Defaults and a profile body are different scopes; sharing
-        // a key across them is fine and is what makes profile
-        // overrides work in the first place.
+        // Defaults and a profile body have always been allowed to
+        // share a key; this is what makes profile overrides work.
         parse_and_validate(
             r"foo {
                 timeout 30
@@ -569,5 +502,42 @@ mod tests {
             }"#,
         )
         .unwrap();
+    }
+
+    // --- §2.5: leading `+` reserved on names ---
+
+    #[test]
+    fn leading_plus_command_name_rejected() {
+        let err = parse_and_validate(r#""+bad" {}"#).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::LeadingPlusName {
+                kind: "command",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn leading_plus_alias_rejected() {
+        let err = parse_and_validate(r#"foo "+bad" {}"#).unwrap_err();
+        assert!(matches!(err, Error::LeadingPlusName { kind: "alias", .. }));
+    }
+
+    #[test]
+    fn leading_plus_profile_name_rejected() {
+        let err = parse_and_validate(
+            r#"foo {
+                "+bad" {}
+            }"#,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::LeadingPlusName {
+                kind: "profile",
+                ..
+            }
+        ));
     }
 }

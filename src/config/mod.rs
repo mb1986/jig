@@ -73,10 +73,30 @@ pub enum Argument {
         key_span: SourceSpan,
         /// Flag value (boolean or stringified literal).
         value: FlagValue,
+        /// Marker controlling how this occurrence interacts with the
+        /// merge algorithm in `SPEC.md` §2.8.
+        mode: FlagMode,
     },
     /// A KDL node with no value: the node name is the literal
     /// positional value (`SPEC.md` §2.6).
     Positional(String),
+}
+
+/// How a flag occurrence participates in the merge algorithm.
+///
+/// `Plain` is the default. `Append` corresponds to the `+`-prefixed
+/// form in the KDL source: it forces this occurrence to emit at its
+/// own position regardless of whether the unmarked side resolves in
+/// single or repeat mode (`SPEC.md` §2.5, §2.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlagMode {
+    /// No marker. Subject to first-occurrence collapse with the
+    /// unmarked side under single-mode merge.
+    Plain,
+    /// Explicit append marker (`+key value` in the source). Always
+    /// emits at its own position; never collapses with unmarked
+    /// occurrences of the same key.
+    Append,
 }
 
 /// Flag key, distinguishing keys that need prefix synthesis from

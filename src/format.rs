@@ -141,7 +141,7 @@ pub fn format_args(args: &[Argument]) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{FlagKey, FlagValue};
+    use crate::config::{FlagKey, FlagMode, FlagValue};
     use miette::SourceSpan;
 
     fn flag(key: FlagKey, value: FlagValue) -> Argument {
@@ -149,6 +149,7 @@ mod tests {
             key,
             key_span: SourceSpan::from((0, 0)),
             value,
+            mode: FlagMode::Plain,
         }
     }
 

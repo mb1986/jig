@@ -7,18 +7,19 @@
 //! - §2.4 (flag = node-with-value; positional = node-without-value)
 //! - §2.4.1 (boolean `#true` / `#false` vs string `"true"` / `"false"`)
 //! - §2.4.2 (positionals starting with `-` use quoted node names)
-//! - §2.5 (key with explicit dash → verbatim; otherwise → inferred)
+//! - §2.5 (key with explicit dash → verbatim; otherwise → inferred;
+//!   leading `+` on a flag key is the explicit append marker)
 //! - §2.6 (positionals)
 //!
-//! Constraint enforcement (`SPEC.md` §2.9) is the validator's job
-//! and lands in Step 4. This module emits only structural errors:
-//! flags with multiple values, KDL properties on any node, and
-//! propagated `kdl::KdlError` syntax failures.
+//! Constraint enforcement (`SPEC.md` §2.9) is the validator's job.
+//! This module emits only structural errors: flags with multiple
+//! values, KDL properties on any node, an empty key after stripping
+//! a `+` marker, and propagated `kdl::KdlError` syntax failures.
 
 use kdl::{KdlDocument, KdlEntry, KdlNode, KdlValue};
 use miette::NamedSource;
 
-use super::{Argument, Command, CommandChild, Config, FlagKey, FlagValue};
+use super::{Argument, Command, CommandChild, Config, FlagKey, FlagMode, FlagValue};
 use crate::errors::{Error, Result};
 
 /// Parse a KDL document string into a [`Config`].
@@ -132,11 +133,30 @@ fn parse_argument(node: &KdlNode, src: &NamedSource<String>) -> Result<Argument>
         .collect();
     match values.as_slice() {
         [] => Ok(Argument::Positional(node.name().value().to_string())),
-        [entry] => Ok(Argument::Flag {
-            key: classify_flag_key(node.name().value()),
-            key_span: node.name().span(),
-            value: flag_value(entry),
-        }),
+        [entry] => {
+            // §2.5: a leading `+` on a flag key is the explicit append
+            // marker. Strip it and apply the dash-prefix rules to the
+            // remainder. The marker is flag-only — positional handling
+            // above takes the node name verbatim.
+            let raw = node.name().value();
+            let (mode, key_text) = if let Some(rest) = raw.strip_prefix('+') {
+                if rest.is_empty() {
+                    return Err(Error::EmptyKeyAfterMarker {
+                        src: src.clone(),
+                        span: node.name().span(),
+                    });
+                }
+                (FlagMode::Append, rest)
+            } else {
+                (FlagMode::Plain, raw)
+            };
+            Ok(Argument::Flag {
+                key: classify_flag_key(key_text),
+                key_span: node.name().span(),
+                value: flag_value(entry),
+                mode,
+            })
+        }
         [_first, extra, ..] => Err(Error::FlagMultipleValues {
             src: src.clone(),
             span: extra.span(),
@@ -438,6 +458,81 @@ mod tests {
     fn syntactically_invalid_kdl_errors() {
         let err = parse("foo {").unwrap_err();
         assert!(matches!(err, Error::KdlParse(_)));
+    }
+
+    #[test]
+    fn append_marker_one_char_key() {
+        let cfg = parse(r#"foo { +I "/proj" }"#).unwrap();
+        let CommandChild::Default(Argument::Flag { key, mode, .. }) = &cfg.commands[0].children[0]
+        else {
+            panic!("expected default flag");
+        };
+        // Marker is stripped; `I` is 1 char → resolves to `-I`.
+        assert_eq!(*key, FlagKey::Inferred("I".to_string()));
+        assert_eq!(*mode, super::FlagMode::Append);
+    }
+
+    #[test]
+    fn append_marker_long_key() {
+        let cfg = parse(r#"foo { +host "0.0.0.0" }"#).unwrap();
+        let CommandChild::Default(Argument::Flag { key, mode, .. }) = &cfg.commands[0].children[0]
+        else {
+            panic!("expected default flag");
+        };
+        assert_eq!(*key, FlagKey::Inferred("host".to_string()));
+        assert_eq!(*mode, super::FlagMode::Append);
+    }
+
+    #[test]
+    fn append_marker_with_explicit_dash_remains_verbatim() {
+        // `+-ngl 999` strips the `+`; the remaining `-ngl` is a
+        // verbatim key per §2.5 rule 1, just with the marker set.
+        let cfg = parse(r"foo { +-ngl 999 }").unwrap();
+        let CommandChild::Default(Argument::Flag { key, mode, .. }) = &cfg.commands[0].children[0]
+        else {
+            panic!("expected default flag");
+        };
+        assert_eq!(*key, FlagKey::Verbatim("-ngl".to_string()));
+        assert_eq!(*mode, super::FlagMode::Append);
+    }
+
+    #[test]
+    fn append_marker_alone_rejected() {
+        // `+` with nothing after is empty key; we error rather than
+        // silently producing a flag with key `""`.
+        let err = parse(r#"foo { "+" "v" }"#).unwrap_err();
+        assert!(matches!(err, Error::EmptyKeyAfterMarker { .. }));
+    }
+
+    #[test]
+    fn unmarked_flag_has_plain_mode() {
+        let cfg = parse(r#"foo { host "x" }"#).unwrap();
+        let CommandChild::Default(Argument::Flag { mode, .. }) = &cfg.commands[0].children[0]
+        else {
+            panic!("expected default flag");
+        };
+        assert_eq!(*mode, super::FlagMode::Plain);
+    }
+
+    #[test]
+    fn plus_on_positional_is_part_of_value() {
+        // A node with no value is a positional. The leading `+` is
+        // part of the literal positional value, not the marker.
+        let cfg = parse(
+            r#"foo {
+                profile {
+                    "+x"
+                }
+            }"#,
+        )
+        .unwrap();
+        let CommandChild::Profile { args, .. } = &cfg.commands[0].children[0] else {
+            panic!();
+        };
+        let Argument::Positional(s) = &args[0] else {
+            panic!();
+        };
+        assert_eq!(s, "+x");
     }
 
     #[test]

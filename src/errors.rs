@@ -145,6 +145,43 @@ pub enum Error {
         span: SourceSpan,
     },
 
+    /// A command, alias, or profile name starts with `+`. Per
+    /// `SPEC.md` §2.5: a leading `+` on a flag key is the explicit
+    /// append marker, and so is reserved on names of all kinds.
+    #[error("{kind} name {name:?} must not start with `+`")]
+    #[diagnostic(help(
+        "a leading `+` is reserved for the explicit append marker on flag keys (`SPEC.md` §2.5); rename it"
+    ))]
+    LeadingPlusName {
+        /// Which kind of name this was: `"command"`, `"alias"`, or
+        /// `"profile"`.
+        kind: &'static str,
+        /// The offending name.
+        name: String,
+        /// Source the span points into.
+        #[source_code]
+        src: NamedSource<String>,
+        /// Span of the offending name.
+        #[label("starts with `+`")]
+        span: SourceSpan,
+    },
+
+    /// A flag node was written as `+key value` with `key` empty
+    /// after the marker is stripped. The `+` alone is not a valid
+    /// flag key.
+    #[error("flag key is empty after the `+` append marker")]
+    #[diagnostic(help(
+        "write the marker followed by the actual flag key (e.g. `+I \"/path\"`, `+host \"x\"`)"
+    ))]
+    EmptyKeyAfterMarker {
+        /// Source the span points into.
+        #[source_code]
+        src: NamedSource<String>,
+        /// Span of the offending node name.
+        #[label("`+` with no key")]
+        span: SourceSpan,
+    },
+
     /// Two top-level commands share the same name but at least one
     /// occurrence is missing an alias. Per `SPEC.md` §2.9 a
     /// duplicated command name is permitted only when every
@@ -221,29 +258,6 @@ pub enum Error {
         first: SourceSpan,
         /// Span of the second profile site.
         #[label("also defined here")]
-        second: SourceSpan,
-    },
-
-    /// Two flags in the same scope (a command's defaults or a
-    /// single profile body) resolve to the same CLI form. Per
-    /// `SPEC.md` §2.9. The comparison is on the *resolved* key
-    /// (after §2.5 prefix synthesis), so `host` and `--host` are
-    /// duplicates.
-    #[error("flag {flag} is set more than once in this scope")]
-    #[diagnostic(help(
-        "each flag key may appear at most once within a scope; `host \"a\"` and `--host \"b\"` both resolve to `--host` and so are duplicates"
-    ))]
-    DuplicateFlagKey {
-        /// The resolved CLI key (e.g. `--host`).
-        flag: String,
-        /// Source the spans point into.
-        #[source_code]
-        src: NamedSource<String>,
-        /// Span of the first flag site.
-        #[label("first set here")]
-        first: SourceSpan,
-        /// Span of the second flag site.
-        #[label("also set here")]
         second: SourceSpan,
     },
 
@@ -373,11 +387,12 @@ impl Error {
             | Self::NodeHasProperties { .. }
             | Self::ExpectedString { .. }
             | Self::LeadingDashName { .. }
+            | Self::LeadingPlusName { .. }
+            | Self::EmptyKeyAfterMarker { .. }
             | Self::DuplicateCommandWithoutAlias { .. }
             | Self::DuplicateAlias { .. }
             | Self::CommandAliasCollision { .. }
             | Self::DuplicateProfile { .. }
-            | Self::DuplicateFlagKey { .. }
             | Self::UnknownCommand { .. }
             | Self::AmbiguousCommand { .. }
             | Self::UnknownProfile { .. }
@@ -532,21 +547,6 @@ mod tests {
             src,
             first: SourceSpan::from((8, 4)),
             second: SourceSpan::from((18, 4)),
-        };
-        insta::assert_snapshot!(render_for_snapshot(&err));
-    }
-
-    #[test]
-    fn duplicate_flag_key_renders() {
-        let src = NamedSource::new(
-            "jig.kdl",
-            "foo {\n  host \"a\"\n  --host \"b\"\n}\n".to_string(),
-        );
-        let err = Error::DuplicateFlagKey {
-            flag: "--host".to_string(),
-            src,
-            first: SourceSpan::from((8, 4)),
-            second: SourceSpan::from((19, 6)),
         };
         insta::assert_snapshot!(render_for_snapshot(&err));
     }

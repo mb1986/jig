@@ -12,19 +12,28 @@
 //!    one candidate each; the **selected** profile contributes its
 //!    own children (in source order); other profiles are skipped
 //!    (`SPEC.md` §2.7).
-//! 4. First-occurrence collapse (`SPEC.md` §2.8.1): for each flag
-//!    key (compared in resolved CLI form per §2.5) keep the
-//!    candidate at the first walk position. The effective value is
-//!    the profile's contribution if any, else the default's.
-//! 5. Suppress flags whose effective value is `#false` (`SPEC.md`
-//!    §2.8.2).
+//! 4. Group flag candidates by resolved CLI form (per §2.5). For
+//!    each key build an emission plan per the per-key resolution in
+//!    `SPEC.md` §2.8:
+//!    - Suppression: profile-side `#false` (regardless of `+`
+//!      marker) drops *all* default occurrences of the key and
+//!      drops the `#false` entries themselves. Default-side `#false`
+//!      drops just that occurrence.
+//!    - Partition surviving entries into unmarked default,
+//!      unmarked profile, and marked (`+` prefix on either side).
+//!    - Marked entries always emit at their own source position
+//!      with their own value.
+//!    - Unmarked entries fall into single mode (≤ 1 on each side
+//!      → v1 first-occurrence positioning with profile-value
+//!      precedence) or repeat mode (otherwise → emit each at its
+//!      own source position).
 //!
 //! Positionals are not subject to override or suppression and are
-//! emitted at the position they were walked, in source order.
+//! emitted at their walk position in source order.
 
 use std::collections::HashMap;
 
-use crate::config::{Argument, Command, CommandChild, Config, FlagValue};
+use crate::config::{Argument, Command, CommandChild, Config, FlagMode, FlagValue};
 use crate::errors::{Error, Result};
 
 /// Output of a successful resolution.
@@ -50,8 +59,9 @@ pub fn resolve(config: &Config, name: &str, profile: Option<&str>) -> Result<Res
         Some(p) => Some(lookup_profile(cmd, p)?),
     };
 
-    // Step 3: walk children, marking each candidate's source.
-    let mut candidates: Vec<(Argument, bool)> = Vec::new();
+    // Step 1: walk children, tagging each candidate with its origin
+    // (default vs selected-profile).
+    let mut candidates: Vec<(Argument, bool /* from_profile */)> = Vec::new();
     for child in &cmd.children {
         match child {
             CommandChild::Default(arg) => candidates.push((arg.clone(), false)),
@@ -64,29 +74,25 @@ pub fn resolve(config: &Config, name: &str, profile: Option<&str>) -> Result<Res
         }
     }
 
-    // Step 4: first-occurrence collapse.
-    let mut first_index: HashMap<String, usize> = HashMap::new();
-    let mut effective: HashMap<String, FlagValue> = HashMap::new();
-    for (i, (arg, from_profile)) in candidates.iter().enumerate() {
-        if let Argument::Flag { key, value, .. } = arg {
-            let resolved_key = key.to_cli_flag();
-            first_index.entry(resolved_key.clone()).or_insert(i);
-            // Profile contributions overwrite; default contributions
-            // only insert if no value yet (validate already ensures
-            // each side contributes at most once per scope).
-            if *from_profile {
-                effective.insert(resolved_key, value.clone());
-            } else {
-                effective
-                    .entry(resolved_key)
-                    .or_insert_with(|| value.clone());
-            }
+    // Step 2: group flag candidates by resolved CLI form, then
+    // compute the emission plan per key. The plan records, for each
+    // emitting source index, the value to use at that position;
+    // indices not present are suppressed (whether by collapse or by
+    // `#false`).
+    let mut by_key: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, (arg, _)) in candidates.iter().enumerate() {
+        if let Argument::Flag { key, .. } = arg {
+            by_key.entry(key.to_cli_flag()).or_default().push(i);
         }
     }
+    let mut emit_value: HashMap<usize, FlagValue> = HashMap::new();
+    for indices in by_key.values() {
+        plan_key(&candidates, indices, &mut emit_value);
+    }
 
-    // Step 5: build the final list. Positionals always emit; flags
-    // emit only at their first-occurrence index, with the effective
-    // value, and `#false` suppresses entirely.
+    // Step 3: assemble. Positionals always emit; flags emit iff they
+    // appear in the plan, taking the planned value (which is what
+    // makes profile override work in single mode).
     let mut out: Vec<Argument> = Vec::with_capacity(candidates.len());
     for (i, (arg, _)) in candidates.into_iter().enumerate() {
         match arg {
@@ -95,19 +101,15 @@ pub fn resolve(config: &Config, name: &str, profile: Option<&str>) -> Result<Res
                 key,
                 key_span,
                 value: _,
+                mode,
             } => {
-                let resolved_key = key.to_cli_flag();
-                if first_index.get(&resolved_key) == Some(&i) {
-                    let value = effective
-                        .remove(&resolved_key)
-                        .expect("invariant: effective is keyed by every flag's resolved key");
-                    if !matches!(value, FlagValue::Bool(false)) {
-                        out.push(Argument::Flag {
-                            key,
-                            key_span,
-                            value,
-                        });
-                    }
+                if let Some(value) = emit_value.remove(&i) {
+                    out.push(Argument::Flag {
+                        key,
+                        key_span,
+                        value,
+                        mode,
+                    });
                 }
             }
         }
@@ -117,6 +119,97 @@ pub fn resolve(config: &Config, name: &str, profile: Option<&str>) -> Result<Res
         program: cmd.name.clone(),
         args: out,
     })
+}
+
+/// Per-key resolution per `SPEC.md` §2.8. Reads the candidates at
+/// `indices` (all sharing a resolved CLI key), applies suppression
+/// and the single/repeat/marker rules, and writes the resulting
+/// emission decisions into `emit_value`.
+fn plan_key(
+    candidates: &[(Argument, bool)],
+    indices: &[usize],
+    emit_value: &mut HashMap<usize, FlagValue>,
+) {
+    // Materialise each candidate's relevant fields. Borrow only;
+    // values are cloned at write time.
+    struct Entry<'a> {
+        idx: usize,
+        from_profile: bool,
+        value: &'a FlagValue,
+        mode: FlagMode,
+    }
+    let entries: Vec<Entry<'_>> = indices
+        .iter()
+        .map(|&i| {
+            let (arg, from_profile) = &candidates[i];
+            let Argument::Flag { value, mode, .. } = arg else {
+                unreachable!("invariant: by_key only references flag candidates");
+            };
+            Entry {
+                idx: i,
+                from_profile: *from_profile,
+                value,
+                mode: *mode,
+            }
+        })
+        .collect();
+
+    // Suppression. Profile-side `#false` (any marker) clears every
+    // default contribution for this key; default-side `#false` only
+    // drops itself.
+    let profile_has_false = entries
+        .iter()
+        .any(|e| e.from_profile && matches!(e.value, FlagValue::Bool(false)));
+    let surviving: Vec<&Entry<'_>> = if profile_has_false {
+        entries
+            .iter()
+            .filter(|e| e.from_profile && !matches!(e.value, FlagValue::Bool(false)))
+            .collect()
+    } else {
+        entries
+            .iter()
+            .filter(|e| !matches!(e.value, FlagValue::Bool(false)))
+            .collect()
+    };
+
+    // Marked entries always emit at their own position, regardless
+    // of unmarked-side mode.
+    for e in surviving.iter().filter(|e| e.mode == FlagMode::Append) {
+        emit_value.insert(e.idx, e.value.clone());
+    }
+
+    // Unmarked entries decide single-mode vs repeat-mode.
+    let d_unmarked: Vec<&&Entry<'_>> = surviving
+        .iter()
+        .filter(|e| !e.from_profile && e.mode == FlagMode::Plain)
+        .collect();
+    let p_unmarked: Vec<&&Entry<'_>> = surviving
+        .iter()
+        .filter(|e| e.from_profile && e.mode == FlagMode::Plain)
+        .collect();
+
+    if d_unmarked.len() <= 1 && p_unmarked.len() <= 1 {
+        // Single mode (v1 first-occurrence positioning). Position is
+        // the default's source index when present, else the
+        // profile's; value is the profile's when present, else the
+        // default's.
+        let pos_idx = if let Some(d) = d_unmarked.first() {
+            d.idx
+        } else if let Some(p) = p_unmarked.first() {
+            p.idx
+        } else {
+            return;
+        };
+        let value = p_unmarked
+            .first()
+            .map_or_else(|| d_unmarked[0].value.clone(), |p| p.value.clone());
+        emit_value.insert(pos_idx, value);
+    } else {
+        // Repeat mode: every unmarked occurrence emits in place.
+        for e in d_unmarked.iter().chain(p_unmarked.iter()) {
+            emit_value.insert(e.idx, e.value.clone());
+        }
+    }
 }
 
 /// Look up a command for completion-candidate emission. Mirrors the
@@ -756,5 +849,377 @@ mod tests {
             panic!();
         };
         assert!(matches!(key, FlagKey::Verbatim(s) if s == "-ngl"));
+    }
+
+    // --- §2.8 repeat-mode (multi-occurrence) merge ---
+
+    #[test]
+    fn defaults_only_repeated_keys_emit_in_order() {
+        // gcc-style: two unmarked default occurrences resolve to
+        // repeat mode (|D_unmarked| > 1).
+        let cfg = parse(
+            r#"gcc {
+                I "/usr/include"
+                I "/opt/include"
+            }"#,
+        );
+        let r = resolve(&cfg, "gcc", None).unwrap();
+        assert_eq!(
+            flatten(&r),
+            vec![
+                ("-I".into(), "/usr/include".into()),
+                ("-I".into(), "/opt/include".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn profile_only_repeated_keys_emit_in_order() {
+        let cfg = parse(
+            r#"curl {
+                with-headers {
+                    header "X-A: 1"
+                    header "X-B: 2"
+                }
+            }"#,
+        );
+        let r = resolve(&cfg, "curl", Some("with-headers")).unwrap();
+        assert_eq!(
+            flatten(&r),
+            vec![
+                ("--header".into(), "X-A: 1".into()),
+                ("--header".into(), "X-B: 2".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn repeat_mode_when_default_has_two_and_profile_adds_one() {
+        let cfg = parse(
+            r#"gcc {
+                I "/usr/include"
+                I "/opt/include"
+                project-a {
+                    I "/proj/a/include"
+                }
+            }"#,
+        );
+        let r = resolve(&cfg, "gcc", Some("project-a")).unwrap();
+        assert_eq!(
+            flatten(&r),
+            vec![
+                ("-I".into(), "/usr/include".into()),
+                ("-I".into(), "/opt/include".into()),
+                ("-I".into(), "/proj/a/include".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn repeat_mode_when_default_has_one_and_profile_has_two() {
+        // |D_unmarked|=1, |P_unmarked|=2 → repeat mode → all three
+        // emit. The default does NOT get overridden in this shape.
+        let cfg = parse(
+            r#"gcc {
+                I "/usr/include"
+                add-two {
+                    I "/a"
+                    I "/b"
+                }
+            }"#,
+        );
+        let r = resolve(&cfg, "gcc", Some("add-two")).unwrap();
+        assert_eq!(
+            flatten(&r),
+            vec![
+                ("-I".into(), "/usr/include".into()),
+                ("-I".into(), "/a".into()),
+                ("-I".into(), "/b".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn count_flag_pattern_v_three_times() {
+        // Three occurrences of `v #true` resolve to `-v -v -v`.
+        let cfg = parse(
+            r"some-tool {
+                v #true
+                v #true
+                v #true
+            }",
+        );
+        let r = resolve(&cfg, "some-tool", None).unwrap();
+        assert_eq!(
+            flatten(&r),
+            vec![
+                ("-v".into(), String::new()),
+                ("-v".into(), String::new()),
+                ("-v".into(), String::new()),
+            ]
+        );
+    }
+
+    // --- §2.8 markerless `#false` clear ---
+
+    #[test]
+    fn profile_false_clears_multi_default_list() {
+        let cfg = parse(
+            r#"gcc {
+                I "/a"
+                I "/b"
+                bare {
+                    I #false
+                }
+            }"#,
+        );
+        let r = resolve(&cfg, "gcc", Some("bare")).unwrap();
+        assert_eq!(flatten(&r), Vec::<(String, String)>::new());
+    }
+
+    #[test]
+    fn profile_false_then_value_clears_then_adds() {
+        // The profile clears defaults' I list, then adds its own.
+        let cfg = parse(
+            r#"gcc {
+                I "/a"
+                I "/b"
+                custom {
+                    I #false
+                    I "/mine"
+                }
+            }"#,
+        );
+        let r = resolve(&cfg, "gcc", Some("custom")).unwrap();
+        // After clear+add, we're left with one profile occurrence —
+        // single mode emits it at the profile's position.
+        assert_eq!(flatten(&r), vec![("-I".into(), "/mine".into())]);
+    }
+
+    #[test]
+    fn default_false_in_middle_of_repeats_drops_only_itself() {
+        let cfg = parse(
+            r#"gcc {
+                I "/a"
+                I #false
+                I "/b"
+            }"#,
+        );
+        let r = resolve(&cfg, "gcc", None).unwrap();
+        assert_eq!(
+            flatten(&r),
+            vec![("-I".into(), "/a".into()), ("-I".into(), "/b".into()),]
+        );
+    }
+
+    // --- §2.5 / §2.8 explicit append marker ---
+
+    #[test]
+    fn marked_profile_adds_to_single_default() {
+        // The blind-spot case for the markerless rule: `+` lets the
+        // profile add an occurrence without overriding the default.
+        let cfg = parse(
+            r#"gcc {
+                I "/usr/include"
+                proj-extras {
+                    +I "/proj/include"
+                }
+            }"#,
+        );
+        let r = resolve(&cfg, "gcc", Some("proj-extras")).unwrap();
+        assert_eq!(
+            flatten(&r),
+            vec![
+                ("-I".into(), "/usr/include".into()),
+                ("-I".into(), "/proj/include".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn unmarked_profile_overrides_single_default_in_v1_mode() {
+        // Same shape as above but without the `+`: single+single
+        // single-mode → v1 override at default's position.
+        let cfg = parse(
+            r#"gcc {
+                I "/usr/include"
+                proj-replace {
+                    I "/proj/include"
+                }
+            }"#,
+        );
+        let r = resolve(&cfg, "gcc", Some("proj-replace")).unwrap();
+        assert_eq!(flatten(&r), vec![("-I".into(), "/proj/include".into())]);
+    }
+
+    #[test]
+    fn unmarked_overrides_default_marked_emits_separately() {
+        // Profile has one unmarked + one marked. Unmarked single-mode
+        // overrides the default at default's position; marked emits
+        // at its own position.
+        let cfg = parse(
+            r#"gcc {
+                I "/usr/include"
+                mixed {
+                    I "/replace"
+                    +I "/extra"
+                }
+            }"#,
+        );
+        let r = resolve(&cfg, "gcc", Some("mixed")).unwrap();
+        assert_eq!(
+            flatten(&r),
+            vec![
+                ("-I".into(), "/replace".into()),
+                ("-I".into(), "/extra".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn marked_default_emits_then_unmarked_single_mode() {
+        // Default has a marked + an unmarked. Profile has one
+        // unmarked. The marked default always emits; the unmarked
+        // default + unmarked profile resolve in single mode.
+        let cfg = parse(
+            r#"gcc {
+                +I "/always"
+                I "/dflt"
+                proj {
+                    I "/proj"
+                }
+            }"#,
+        );
+        let r = resolve(&cfg, "gcc", Some("proj")).unwrap();
+        assert_eq!(
+            flatten(&r),
+            vec![
+                ("-I".into(), "/always".into()),
+                ("-I".into(), "/proj".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn profile_false_clears_marked_default_too() {
+        // Profile-side `#false` clears every default occurrence of
+        // the key, regardless of marker.
+        let cfg = parse(
+            r#"gcc {
+                +I "/always"
+                I "/dflt"
+                bare {
+                    I #false
+                }
+            }"#,
+        );
+        let r = resolve(&cfg, "gcc", Some("bare")).unwrap();
+        assert_eq!(flatten(&r), Vec::<(String, String)>::new());
+    }
+
+    #[test]
+    fn marked_profile_with_no_default() {
+        // `+` on a profile flag with no matching default is harmless:
+        // it's the only entry, emits at its own position.
+        let cfg = parse(
+            r#"foo {
+                proj {
+                    +I "/proj"
+                }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("proj")).unwrap();
+        assert_eq!(flatten(&r), vec![("-I".into(), "/proj".into())]);
+    }
+
+    #[test]
+    fn two_marked_entries_in_one_profile() {
+        // Two `+`-marked entries for the same key in one profile —
+        // both should emit at their own positions, since marker
+        // skips collapse.
+        let cfg = parse(
+            r#"foo {
+                proj {
+                    +I "/a"
+                    +I "/b"
+                }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("proj")).unwrap();
+        assert_eq!(
+            flatten(&r),
+            vec![("-I".into(), "/a".into()), ("-I".into(), "/b".into()),]
+        );
+    }
+
+    #[test]
+    fn marked_default_with_no_profile_selected() {
+        // `+` in defaults with no profile selected is harmless: only
+        // entry, emits at its own position.
+        let cfg = parse(r#"foo { +I "/dflt" }"#);
+        let r = resolve(&cfg, "foo", None).unwrap();
+        assert_eq!(flatten(&r), vec![("-I".into(), "/dflt".into())]);
+    }
+
+    #[test]
+    fn marked_boolean_flag_emits() {
+        // `+v #true` is a marked boolean: marker forces own-position
+        // emit, value `#true` emits as bare flag (no value).
+        let cfg = parse(
+            r"foo {
+                v #true
+                more {
+                    +v #true
+                }
+            }",
+        );
+        let r = resolve(&cfg, "foo", Some("more")).unwrap();
+        assert_eq!(
+            flatten(&r),
+            vec![("-v".into(), String::new()), ("-v".into(), String::new()),]
+        );
+    }
+
+    #[test]
+    fn resolved_form_collision_keys_marked_and_unmarked() {
+        // `+host` and unmarked `--host` both resolve to `--host`,
+        // so they share the same per-key plan. Marked emits at its
+        // own position; unmarked single-mode emits at its position
+        // with its own value (no profile to override with).
+        let cfg = parse(
+            r#"foo {
+                +host "a"
+                --host "b"
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", None).unwrap();
+        assert_eq!(
+            flatten(&r),
+            vec![("--host".into(), "a".into()), ("--host".into(), "b".into()),]
+        );
+    }
+
+    #[test]
+    fn count_flag_clear_then_replace() {
+        // Profile clears the default count and sets a different one.
+        // Profile `#false` wipes defaults; the two surviving
+        // unmarked profile entries trigger repeat mode.
+        let cfg = parse(
+            r"foo {
+                v #true
+                v #true
+                v #true
+                medium {
+                    v #false
+                    v #true
+                    v #true
+                }
+            }",
+        );
+        let r = resolve(&cfg, "foo", Some("medium")).unwrap();
+        assert_eq!(
+            flatten(&r),
+            vec![("-v".into(), String::new()), ("-v".into(), String::new()),]
+        );
     }
 }

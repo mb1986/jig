@@ -266,34 +266,73 @@ fn duplicate_profile_in_command_exits_125() {
 }
 
 #[test]
-fn duplicate_flag_key_exits_125() {
+fn repeated_default_flags_emit_in_order() {
+    // gcc-style: same key twice in defaults resolves to repeat mode.
     let dir = tempdir().unwrap();
     fs::write(
         dir.path().join("jig.kdl"),
-        "foo {\n    host \"a\"\n    host \"b\"\n}\n",
+        "gcc {\n    I \"/usr/include\"\n    I \"/opt/include\"\n}\n",
     )
     .unwrap();
     jig()
         .current_dir(dir.path())
+        .arg("--dry-run")
+        .arg("gcc")
         .assert()
-        .code(125)
-        .stderr(predicate::str::contains("--host"));
+        .code(0)
+        .stdout("gcc -I /usr/include -I /opt/include\n");
 }
 
 #[test]
-fn resolved_form_flag_collision_exits_125() {
-    // `host "a"` and `--host "b"` both resolve to --host.
+fn append_marker_adds_to_single_default() {
+    // The `+` prefix lets a profile add an occurrence without
+    // overriding the default.
     let dir = tempdir().unwrap();
     fs::write(
         dir.path().join("jig.kdl"),
-        "foo {\n    host \"a\"\n    --host \"b\"\n}\n",
+        "gcc {\n    I \"/usr/include\"\n    proj-extras {\n        +I \"/proj/include\"\n    }\n}\n",
     )
     .unwrap();
     jig()
         .current_dir(dir.path())
+        .arg("--dry-run")
+        .arg("gcc")
+        .arg("proj-extras")
+        .assert()
+        .code(0)
+        .stdout("gcc -I /usr/include -I /proj/include\n");
+}
+
+#[test]
+fn profile_false_clears_multi_default_list() {
+    // Profile-side `#false` wipes every default occurrence of the
+    // key, regardless of marker.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "gcc {\n    I \"/a\"\n    I \"/b\"\n    bare {\n        I #false\n    }\n}\n",
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--dry-run")
+        .arg("gcc")
+        .arg("bare")
+        .assert()
+        .code(0)
+        .stdout("gcc\n");
+}
+
+#[test]
+fn append_marker_alone_exits_125() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "foo {\n    \"+\" \"v\"\n}\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("foo")
         .assert()
         .code(125)
-        .stderr(predicate::str::contains("--host"));
+        .stderr(predicate::str::contains("empty after the `+`"));
 }
 
 #[test]
