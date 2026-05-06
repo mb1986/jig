@@ -14,6 +14,8 @@
 #![allow(clippy::result_large_err)]
 
 mod cli;
+mod complete;
+mod completions;
 mod config;
 mod errors;
 mod exec;
@@ -53,6 +55,26 @@ fn run(cli: &Cli) -> Result<i32> {
     // `--completions` is handled before any config load, per Q1.
     if let Some(shell) = cli.completions {
         crate::cli::emit_completions(shell);
+        return Ok(0);
+    }
+
+    // Candidate-emission flags (used by completion scripts) load
+    // the config defensively: any error becomes empty stdout +
+    // exit 0 so the shell never sees a half-broken tab-complete.
+    if cli.list_commands {
+        if let Ok((config, src)) = config::load::load(cli.config.as_deref())
+            && config::validate::validate(&config, &src).is_ok()
+        {
+            complete::print_commands(&config);
+        }
+        return Ok(0);
+    }
+    if let Some(name) = &cli.list_profiles {
+        if let Ok((config, src)) = config::load::load(cli.config.as_deref())
+            && config::validate::validate(&config, &src).is_ok()
+        {
+            complete::print_profiles(&config, name);
+        }
         return Ok(0);
     }
 

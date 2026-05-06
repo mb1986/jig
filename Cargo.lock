@@ -173,15 +173,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "clap_complete"
-version = "4.6.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "660c0520455b1013b9bcb0393d5f643d7e4454fb69c915b8d6d2aa0e9a45acc3"
-dependencies = [
- "clap",
-]
-
-[[package]]
 name = "clap_derive"
 version = "4.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -359,7 +350,6 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap",
- "clap_complete",
  "insta",
  "kdl 6.5.0",
  "miette 7.6.0",

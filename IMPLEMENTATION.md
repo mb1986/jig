@@ -34,8 +34,7 @@ Direct dependencies are kept minimal and justified.
 | Crate | Purpose | Notes |
 |---|---|---|
 | `kdl` (v6.x) | Parse `jig.kdl` | Enable `v1-fallback` feature so users can write either v1 or v2 syntax. Produces `miette`-compatible diagnostics. |
-| `clap` (v4, derive feature) | CLI argument parsing | Use `trailing_var_arg` and `allow_hyphen_values` for pass-through args. |
-| `clap_complete` | Shell completion script generation | Static (AOT) completion only for v1. Dynamic completion (`unstable-dynamic`) is deferred. |
+| `clap` (v4, derive feature) | CLI argument parsing | Use `trailing_var_arg` and `allow_hyphen_values` for pass-through args. The `Shell` value-enum for `--completions` is hand-defined (zsh/bash/fish only), so no separate completion crate is needed. |
 | `miette` | Diagnostic rendering | Source-span-aware error messages. Matches `kdl`'s diagnostic ecosystem. Enable the `fancy` feature for terminal rendering. |
 | `thiserror` | Typed error definitions | Used together with `miette` derives. |
 | `shlex` | Shell-quoting for `--dry-run` output | `shlex::try_quote` produces POSIX-compatible quoting. |
@@ -71,6 +70,13 @@ src/
   resolve.rs       // command/alias lookup + source-order walk with profile selection → resolved argument list
   format.rs        // resolved argument list → Vec<OsString> for execv
   exec.rs          // run resolved command, propagate exit status / signals
+  list.rs          // --list rendering
+  complete.rs      // candidate emitters for --list-commands / --list-profiles
+  completions/
+    mod.rs         // Shell value-enum + dispatch to embedded scripts
+    jig.zsh        // hand-rolled zsh completion script
+    jig.bash       // hand-rolled bash completion script
+    jig.fish       // hand-rolled fish completion script
   errors.rs        // typed error enum with miette + thiserror derives
 tests/
   integration.rs   // end-to-end tests via assert_cmd
@@ -231,11 +237,18 @@ A literal `--` token in `passthrough` is preserved (clap consumes the `--` separ
 
 ### 9.2 Completion generation
 
-A `--completions <SHELL>` flag (defined in §9.1) generates the static completion script for the requested shell (bash, zsh, fish, elvish, powershell). The flag is hidden from `--help` because it is rarely used directly by humans.
+`--completions <SHELL>` emits a hand-rolled completion script for `zsh`, `bash`, or `fish`. Each script is stored as a verbatim file under `src/completions/` (`jig.zsh`, `jig.bash`, `jig.fish`) and embedded into the binary via `include_str!`. The flag is hidden from `--help` because it is rarely used directly by humans.
 
 Users typically run `jig --completions zsh > /path/to/completion/dir/_jig` once during shell setup. Distribution-level packaging may pre-install the scripts.
 
-Dynamic completion (completing actual command names, aliases, and profiles from the local `jig.kdl`) is deferred. The `clap_complete` dynamic API is currently behind `unstable-dynamic` and not stable enough to commit to.
+Each script knows `jig`'s own flags statically and dispatches to two hidden completion-only flags for dynamic candidates:
+
+- `jig --list-commands` — one candidate per line, listing every alias plus every command name that appears exactly once. Duplicated bare names are excluded because they are not valid lookup keys (per `SPEC.md` §2.9 / §4).
+- `jig --list-profiles <COMMAND>` — one profile name per line for the matched command (resolved by name or alias). An unknown name or a duplicated bare name produces empty output.
+
+Both flags exit `0` with empty stdout and empty stderr on any failure (missing config, parse error, validation error) so completion never breaks mid-tab. The candidate emitters live in `src/complete.rs` and are wired into `main::run` ahead of the normal command-resolution flow.
+
+The shell scripts forward an explicit `--config <PATH>` from the user's command line to the candidate-emission calls, so completion always reflects the chosen config. Other shells (`elvish`, `powershell`, …) are intentionally unsupported in v1; adding one is a matter of dropping a fourth script under `src/completions/` and a variant on the `Shell` enum.
 
 ### 9.3 Execution
 
@@ -293,14 +306,14 @@ Empty file (or absent). Lint configuration lives in source via `#![warn]` / `#![
   - Source-order argument emission (flags and positionals interleaved per config)
   - Exit codes (125 for missing config, 127 for missing binary, propagated otherwise)
   - Boolean vs string distinction (`#true` vs `"true"`)
-  - Completion script generation (`--completions zsh` produces non-empty script and exits 0)
+  - Completion script generation (`--completions zsh|bash|fish` produces non-empty script and exits 0)
+  - Dynamic completion candidate emission (`--list-commands` / `--list-profiles`): correct outputs for unique names, aliases, duplicated bare names; silent exit-0 for missing/malformed configs; `--config <PATH>` forwarding
 - **Fuzz testing:** out of scope for v1. The KDL parser itself is fuzzed upstream.
 
 ## 12. Out of Scope for v1
 
 The following are deliberately deferred and tracked here so they are not silently re-introduced:
 
-- Dynamic shell completion (command/profile/alias name completion from the loaded config).
 - Library crate / programmatic API.
 - Parent-directory configuration traversal.
 - Global / per-user configuration.

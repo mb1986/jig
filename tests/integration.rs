@@ -687,6 +687,203 @@ fn version_flag_prints_version() {
         .stdout(predicate::str::contains("jig"));
 }
 
+// --- §3.4 dynamic completion (--list-commands / --list-profiles) ---
+
+#[test]
+fn list_commands_prints_unique_names_and_aliases() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "llama-server \"serve\" {}\nrsync \"sync\" {}\nfoo {}\n",
+    )
+    .unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .arg("--list-commands")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["llama-server", "serve", "rsync", "sync", "foo"]);
+}
+
+#[test]
+fn list_commands_excludes_duplicated_bare_names() {
+    // A bare command name that appears twice is not a valid lookup
+    // key (typing it errors as ambiguous), so it must not be a
+    // completion candidate. Aliases stay.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "llama-server \"a\" {}\nllama-server \"b\" {}\nfoo {}\n",
+    )
+    .unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .arg("--list-commands")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["a", "b", "foo"]);
+}
+
+#[test]
+fn list_commands_with_no_config_exits_0_silent() {
+    // Completion must never break mid-tab: a missing config
+    // produces empty stdout, empty stderr, exit 0.
+    let dir = tempdir().unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--list-commands")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn list_commands_with_malformed_config_exits_0_silent() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "this is not valid kdl {").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--list-commands")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn list_profiles_via_alias_prints_profiles() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "llama-server \"serve\" {\n    qwen-coder {}\n    llama3 {}\n}\n",
+    )
+    .unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .arg("--list-profiles")
+        .arg("serve")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["qwen-coder", "llama3"]);
+}
+
+#[test]
+fn list_profiles_for_duplicated_bare_name_is_silent() {
+    // A duplicated bare name has no unique profile set; the user
+    // must invoke via an alias. Completion emits nothing.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "llama-server \"a\" { p1 {} }\nllama-server \"b\" { p2 {} }\n",
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--list-profiles")
+        .arg("llama-server")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn list_profiles_for_unknown_command_is_silent() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "foo { fast {} }\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--list-profiles")
+        .arg("bogus")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn list_profiles_with_no_config_exits_0_silent() {
+    let dir = tempdir().unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--list-profiles")
+        .arg("anything")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn list_profiles_honors_explicit_config() {
+    // Completion scripts forward `--config <PATH>` so candidates
+    // reflect the user-chosen file, not the cwd-discovered one.
+    let cfg_dir = tempdir().unwrap();
+    let cfg_path = cfg_dir.path().join("custom.kdl");
+    fs::write(
+        &cfg_path,
+        "foo {\n    from-custom {}\n    also-from-custom {}\n}\n",
+    )
+    .unwrap();
+    let other = tempdir().unwrap();
+    let out = jig()
+        .current_dir(other.path())
+        .arg("--config")
+        .arg(&cfg_path)
+        .arg("--list-profiles")
+        .arg("foo")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["from-custom", "also-from-custom"]);
+}
+
+#[test]
+fn completions_fish_emits_non_empty_script() {
+    let dir = tempdir().unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .arg("--completions")
+        .arg("fish")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(!stdout.is_empty());
+    assert!(stdout.contains("complete -c jig"));
+}
+
+#[test]
+fn completions_each_shell_references_dynamic_flags() {
+    // Snapshot-style sanity: each script must dispatch to the
+    // candidate-emitting flags so completion is truly dynamic.
+    for shell in ["zsh", "bash", "fish"] {
+        let out = jig().arg("--completions").arg(shell).output().unwrap();
+        assert_eq!(out.status.code(), Some(0), "shell {shell} failed");
+        let stdout = String::from_utf8(out.stdout).unwrap();
+        assert!(
+            stdout.contains("--list-commands"),
+            "{shell} script missing --list-commands"
+        );
+        assert!(
+            stdout.contains("--list-profiles"),
+            "{shell} script missing --list-profiles"
+        );
+    }
+}
+
 #[test]
 fn dry_run_value_with_embedded_nul_byte_exits_125() {
     // A NUL byte cannot be shell-quoted, so --dry-run should refuse

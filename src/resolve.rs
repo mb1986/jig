@@ -119,6 +119,27 @@ pub fn resolve(config: &Config, name: &str, profile: Option<&str>) -> Result<Res
     })
 }
 
+/// Look up a command for completion-candidate emission. Mirrors the
+/// rules in [`lookup_command`] but never errors: returns `None` for
+/// unknown names and for duplicated bare names (which have no unique
+/// profile set — the user must invoke via an alias). Used by
+/// [`crate::complete`].
+#[must_use]
+pub fn find_for_completion<'a>(config: &'a Config, name: &str) -> Option<&'a Command> {
+    let name_matches: Vec<&Command> = config.commands.iter().filter(|c| c.name == name).collect();
+    if name_matches.len() == 1 {
+        return Some(name_matches[0]);
+    }
+    if name_matches.len() > 1 {
+        // Duplicated bare name → ambiguous, no unique profile set.
+        return None;
+    }
+    config
+        .commands
+        .iter()
+        .find(|c| c.alias.as_deref() == Some(name))
+}
+
 fn lookup_command<'a>(config: &'a Config, name: &str) -> Result<&'a Command> {
     // Step 1: count name matches.
     let name_matches: Vec<&Command> = config.commands.iter().filter(|c| c.name == name).collect();

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Dynamic shell completion. `jig --completions zsh|bash|fish` now emits a
+  hand-rolled script that completes command names, aliases, and profile
+  names from the local `jig.kdl` at completion time. The script forwards
+  an explicit `--config <PATH>` from the user's command line so candidates
+  always reflect the chosen config. Backed by two new hidden flags,
+  `--list-commands` and `--list-profiles <COMMAND>`, which print one
+  candidate per line and exit `0` silently on any failure so completion
+  never breaks mid-tab.
+
 ### Changed
 
 - A command name may now appear more than once across the config, as long
@@ -15,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   command name that appears exactly once continues to be a valid lookup
   key (no behavior change for existing configs). A new `AmbiguousCommand`
   diagnostic is raised when the bare form of a duplicated name is invoked.
+- `--completions` no longer accepts `elvish` or `powershell`. The supported
+  shells are now `zsh`, `bash`, and `fish`. The `clap_complete` dependency
+  has been dropped in favor of hand-rolled scripts that support dynamic
+  completion.
 
 ## [0.1.0] — 2026-05-04
 

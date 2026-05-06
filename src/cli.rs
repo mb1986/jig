@@ -19,8 +19,9 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use clap::{CommandFactory, Parser, ValueHint};
-use clap_complete::Shell;
+use clap::{Parser, ValueHint};
+
+use crate::completions::Shell;
 
 const USAGE_NOTES: &str = "\
 Positional arguments:
@@ -59,6 +60,28 @@ pub struct Cli {
     /// Does not require a config file.
     #[arg(long, value_name = "SHELL", hide = true)]
     pub completions: Option<Shell>,
+
+    /// Print every command name and alias from the loaded config,
+    /// one per line. Hidden — used by completion scripts. Any
+    /// failure to load or validate the config exits 0 with empty
+    /// stdout so completion never breaks mid-tab.
+    #[arg(
+        long,
+        hide = true,
+        conflicts_with_all = ["list", "dry_run", "completions", "list_profiles"],
+    )]
+    pub list_commands: bool,
+
+    /// Print every profile name attached to `<COMMAND>` (a command
+    /// name or alias), one per line. Hidden — used by completion
+    /// scripts. Unknown / ambiguous names produce empty output.
+    #[arg(
+        long,
+        value_name = "COMMAND",
+        hide = true,
+        conflicts_with_all = ["list", "dry_run", "completions"],
+    )]
+    pub list_profiles: Option<String>,
 
     /// Filled by [`parse_argv`], not clap.
     #[arg(skip)]
@@ -110,9 +133,13 @@ fn split_argv(argv: &[OsString]) -> (&[OsString], &[OsString]) {
             // onward is command/profile/passthrough.
             return (&argv[..i], &argv[i..]);
         }
-        // Hyphen-prefixed: a flag. `--config` and `--completions`
-        // take values; everything else is treated as standalone.
-        if matches!(arg.as_ref(), "--config" | "--completions") {
+        // Hyphen-prefixed: a flag. `--config`, `--completions`,
+        // and `--list-profiles` take values; everything else is
+        // treated as standalone.
+        if matches!(
+            arg.as_ref(),
+            "--config" | "--completions" | "--list-profiles"
+        ) {
             // Skip `--<flag> <value>` (or just `--<flag>` if value
             // is missing — let clap error on that).
             i += 2;
@@ -123,14 +150,13 @@ fn split_argv(argv: &[OsString]) -> (&[OsString], &[OsString]) {
     (argv, &[])
 }
 
-/// Emit the static completion script for `shell` to stdout, per
-/// `SPEC.md` §3.4. The completion completes `jig`'s own flags and
-/// tells the shell that the next positional is "a command name";
-/// dynamic completion of command/profile names from `jig.kdl` is
-/// deferred (see `FUTURE.md`).
+/// Emit the completion script for `shell` to stdout, per `SPEC.md`
+/// §3.4. The script completes `jig`'s own flags and dispatches to
+/// `jig --list-commands` / `jig --list-profiles` for dynamic
+/// command, alias, and profile completion against the local
+/// `jig.kdl`.
 pub fn emit_completions(shell: Shell) {
-    let mut cmd = Cli::command();
-    clap_complete::generate(shell, &mut cmd, "jig", &mut std::io::stdout());
+    crate::completions::emit(shell);
 }
 
 fn fill_positional(cli: &mut Cli, rest: &[OsString]) {

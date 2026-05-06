@@ -344,13 +344,15 @@ Rationale: pass-through tokens are user additions on top of the resolved command
 | `-n`, `--dry-run`     | Print the resolved command (shell-quoted) to stdout and exit 0 without executing. |
 | `--config <PATH>`     | Use `<PATH>` instead of looking for `jig.kdl` / `.jig.kdl` in CWD. |
 | `-l`, `--list`        | List all configured commands, aliases, and profiles. Exits 0. |
-| `--completions <SHELL>` | Generate a shell completion script for `<SHELL>` (`bash`, `zsh`, `fish`, `elvish`, `powershell`) and write it to stdout. Exits 0. Hidden from `--help`. |
+| `--completions <SHELL>` | Generate a shell completion script for `<SHELL>` (`zsh`, `bash`, `fish`) and write it to stdout. Exits 0. Hidden from `--help`. |
 | `-h`, `--help`        | Print help and exit. |
 | `-V`, `--version`     | Print version and exit. |
 
 Long-form `--dry-run` is canonical; `-n` mirrors `make`/`ninja` convention.
 
-The `--completions` flag emits a static (ahead-of-time) completion script that completes `jig`'s own flags and tells the shell that the next positional is "a command name." It does not currently complete actual command names, aliases, or profiles from the loaded `jig.kdl` (dynamic completion is deferred — see `FUTURE.md`).
+The `--completions` flag emits a completion script that completes `jig`'s own flags and dispatches to `jig --list-commands` and `jig --list-profiles <COMMAND>` to enumerate command names, aliases, and profile names from the local `jig.kdl` at completion time. The shell scripts forward an explicit `--config <PATH>` from the user's command line so candidates always reflect the chosen config.
+
+The `--list-commands` and `--list-profiles <COMMAND>` flags are hidden completion-only flags. They print one candidate per line on stdout and never produce stderr. Any failure to load or validate the config results in empty stdout and exit code `0`, so completion never breaks mid-tab. A bare command name that appears more than once in the config is excluded from `--list-commands` output (it is not a valid lookup key per §2.9 / §4), and `--list-profiles` for such a name produces no output — the user must invoke via an alias.
 
 ### 3.5 Exit codes
 
@@ -572,7 +574,6 @@ The following are deliberately deferred. None of them are precluded by the v1 de
 - Multiple aliases per command.
 - Multiple occurrences of the same profile within a command.
 - Subcommand chains beyond what fits in a quoted command name.
-- Dynamic shell completion (completing command/alias/profile names from the loaded config — static flag completion via `clap_complete` *is* in scope).
 - `--print` variants (e.g. argv-array form vs shell-quoted form).
 - Validation of resolved commands beyond `Command::spawn` failures (e.g. proactive existence/executability checks before launching).
 - Environment variable definitions in config (delegated to a future version).

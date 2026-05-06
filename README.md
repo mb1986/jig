@@ -66,6 +66,25 @@ llama-server (alias: serve)
     llama3
 ```
 
+## Shell completion
+
+`jig --completions <shell>` writes a completion script to stdout for
+zsh, bash, or fish. The script tab-completes `jig`'s own flags as
+well as the command names, aliases, and profile names defined in the
+`jig.kdl` of whatever directory you're in (and forwards `--config
+<PATH>` if you've passed one).
+
+```sh
+# zsh — drop into a directory on $fpath, then `compinit`:
+jig --completions zsh > "${fpath[1]}/_jig"
+
+# bash — source on shell startup:
+jig --completions bash > ~/.local/share/bash-completion/completions/jig
+
+# fish:
+jig --completions fish > ~/.config/fish/completions/jig.fish
+```
+
 ## Install
 
 From [crates.io](https://crates.io/crates/jig-run):
@@ -103,7 +122,7 @@ appended verbatim to the resolved command line, including a literal
 | `-n`, `--dry-run`       | Print the resolved (shell-quoted) command line and exit         |
 | `--config <PATH>`       | Use `<PATH>` instead of `./jig.kdl` / `./.jig.kdl`              |
 | `-l`, `--list`          | List configured commands, aliases, and profiles                 |
-| `--completions <SHELL>` | Emit a static completion script (bash/zsh/fish/elvish/powershell) |
+| `--completions <SHELL>` | Emit a completion script (zsh/bash/fish) with dynamic command/profile completion |
 | `-h`, `--help`          | Print help                                                      |
 | `-V`, `--version`       | Print version                                                   |
 
@@ -152,9 +171,9 @@ design, and dependency choices.
 
 **v1, Unix only.** Tested on Linux and macOS. Windows support is
 deferred — see [`FUTURE.md`](./FUTURE.md), which also tracks
-dynamic shell completion, environment-variable bindings, parent-
-directory config traversal, profile inheritance, repeating flags,
-and other ideas surfaced during design.
+environment-variable bindings, parent-directory config traversal,
+profile inheritance, repeating flags, and other ideas surfaced
+during design.
 
 ## License
 

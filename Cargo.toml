@@ -12,6 +12,9 @@ keywords = ["cli", "command-runner", "profile", "kdl", "wrapper"]
 categories = ["command-line-utilities", "development-tools"]
 include = [
     "src/**/*.rs",
+    "src/completions/*.zsh",
+    "src/completions/*.bash",
+    "src/completions/*.fish",
     "Cargo.toml",
     "README.md",
     "LICENSE",
@@ -27,7 +30,6 @@ path = "src/main.rs"
 [dependencies]
 kdl = { version = "6", features = ["v1-fallback"] }
 clap = { version = "4", features = ["derive"] }
-clap_complete = "4"
 miette = { version = "7", features = ["fancy"] }
 thiserror = "2"
 shlex = "1"
