@@ -134,7 +134,15 @@ a single-character key like `m "/path"` becomes `-m /path`; an
 explicit-dash key like `-ngl 999` is passed verbatim. KDL booleans
 toggle flag presence: `flash-attn #true` emits `--flash-attn`,
 `flash-attn #false` suppresses it (even when it would otherwise
-come from defaults). See [`SPEC.md`](./SPEC.md) for the full table.
+come from defaults).
+
+A flag key may repeat within a scope — `gcc { I "/a"; I "/b" }`
+resolves to `gcc -I /a -I /b`, and `-v -v -v` count flags work the
+same way. When defaults *and* a profile both contribute a single
+unmarked occurrence of the same key, the profile overrides (v1
+behavior). To force *add* instead of *override* in that single+single
+case, prefix the profile's key with `+`: `+I "/proj"`. See
+[`SPEC.md`](./SPEC.md) for the full table.
 
 ### Exit codes
 
@@ -160,7 +168,8 @@ covers:
   positionals.
 - Prefix synthesis — when keys get `-` vs `--`.
 - Defaults and profiles, and the merge semantics (first-occurrence
-  positioning, `#false` suppression).
+  positioning, repeated flag keys with single-mode vs repeat-mode
+  resolution, `#false` suppression, and the `+` append marker).
 - Constraints (uniqueness, no-leading-dash names).
 - Diagnostic quality — what `jig` errors aim for.
 
@@ -172,8 +181,7 @@ design, and dependency choices.
 **v1, Unix only.** Tested on Linux and macOS. Windows support is
 deferred — see [`FUTURE.md`](./FUTURE.md), which also tracks
 environment-variable bindings, parent-directory config traversal,
-profile inheritance, repeating flags, and other ideas surfaced
-during design.
+profile inheritance, and other ideas surfaced during design.
 
 ## License
 
