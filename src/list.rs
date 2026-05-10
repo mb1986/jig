@@ -4,6 +4,7 @@
 //!
 //! ```text
 //! llama-server (alias: serve)
+//!   env: -u OLD_VAR OLLAMA_HOST=0.0.0.0
 //!   default-args: --host 0.0.0.0 --port 8090 -c 32768 --flash-attn
 //!   profiles:
 //!     qwen-coder
@@ -18,11 +19,15 @@
 //! Default-args are rendered through [`crate::format::format_args`]
 //! so the `-` / `--` prefix synthesis (§2.5), `#true` / `#false`
 //! handling (§2.4.1), and shell-quoting (§7.2) all match what a
-//! `--dry-run` would produce.
+//! `--dry-run` would produce. The `env:` line is emitted only when
+//! the command declares default env vars (§2.10) and uses the same
+//! `env(1)`-style form as `--dry-run` (`-u NAME` for unsets, then
+//! `NAME=value` for sets).
 
-use crate::config::{Argument, Command, CommandChild, Config};
+use crate::config::{Argument, Command, CommandChild, Config, EnvValue};
 use crate::errors::Result;
 use crate::format;
+use crate::resolve::EnvOp;
 
 /// Render `config` to stdout per `SPEC.md` §7.1.
 ///
@@ -47,6 +52,24 @@ fn print_command(cmd: &Command) -> Result<()> {
     match &cmd.alias {
         Some(alias) => println!("{} (alias: {alias})", cmd.name),
         None => println!("{}", cmd.name),
+    }
+
+    if !cmd.env.is_empty() {
+        let env_ops: Vec<EnvOp> = cmd
+            .env
+            .iter()
+            .map(|e| match &e.value {
+                EnvValue::Set(v) => EnvOp::Set {
+                    name: e.name.clone(),
+                    value: v.clone(),
+                },
+                EnvValue::Unset => EnvOp::Unset {
+                    name: e.name.clone(),
+                },
+            })
+            .collect();
+        let line = format::format_env(&env_ops)?;
+        println!("  env: {line}");
     }
 
     let defaults: Vec<Argument> = cmd

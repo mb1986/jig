@@ -1,0 +1,16 @@
+---
+source: src/errors.rs
+expression: render_for_snapshot(&err)
+---
+  × env-var "X" is declared more than once in command "foo" defaults
+   ╭─[jig.kdl:2:8]
+ 1 │ foo {
+ 2 │   (env)X "1"
+   ·        ┬
+   ·        ╰── first declared here
+ 3 │   (env)X "2"
+   ·       ┬
+   ·       ╰── also declared here
+ 4 │ }
+   ╰────
+  help: each env-var name may appear at most once per scope; combine the declarations or move one to a profile to override

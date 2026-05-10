@@ -18,6 +18,7 @@ use std::ffi::OsString;
 
 use crate::config::{Argument, FlagValue};
 use crate::errors::{Error, Result};
+use crate::resolve::EnvOp;
 
 /// Produce the textual tokens for `args` per §2.5, omitting any
 /// flag whose value is `Bool(false)` (defensive — resolve already
@@ -105,15 +106,25 @@ pub fn to_argv(args: &[Argument], passthrough: &[OsString]) -> Vec<OsString> {
 /// shell. Per Q7, non-UTF-8 pass-through arguments error rather
 /// than lossy-render.
 ///
+/// When `env_ops` is non-empty, the line is prefixed with an
+/// `env(1)` invocation that applies them: `-u NAME` for each unset
+/// followed by `NAME=value` for each set, with values (but not
+/// names) shell-quoted as needed.
+///
 /// # Errors
 ///
 /// Returns [`Error::PassthroughNotUtf8`] if a pass-through argument
 /// is not valid UTF-8, or [`Error::ArgumentContainsNul`] if any
 /// value contains a NUL byte (which `shlex` cannot quote).
-pub fn to_dry_run(program: &str, args: &[Argument], passthrough: &[OsString]) -> Result<String> {
-    let mut tokens = Vec::with_capacity(args.len() * 2 + passthrough.len() + 1);
-    tokens.push(program.to_string());
-    tokens.extend(args_to_tokens(args));
+pub fn to_dry_run(
+    program: &str,
+    args: &[Argument],
+    passthrough: &[OsString],
+    env_ops: &[EnvOp],
+) -> Result<String> {
+    let mut body_tokens = Vec::with_capacity(args.len() * 2 + passthrough.len() + 1);
+    body_tokens.push(program.to_string());
+    body_tokens.extend(args_to_tokens(args));
     for pt in passthrough {
         let s = pt
             .to_str()
@@ -121,9 +132,47 @@ pub fn to_dry_run(program: &str, args: &[Argument], passthrough: &[OsString]) ->
                 lossy: pt.to_string_lossy().into_owned(),
             })?
             .to_string();
-        tokens.push(s);
+        body_tokens.push(s);
     }
-    shell_join(&tokens)
+    let body = shell_join(&body_tokens)?;
+
+    let env_parts = env_tokens_quoted(env_ops)?;
+    if env_parts.is_empty() {
+        Ok(body)
+    } else {
+        Ok(format!("env {} {body}", env_parts.join(" ")))
+    }
+}
+
+/// Build the env-var prefix tokens (without the leading literal
+/// `"env"` marker). Each unset emits `-u NAME`; each set emits
+/// `NAME=value` with the value shell-quoted on its own (the entire
+/// `K=V` token is *not* re-quoted, because `K=V` at the start of a
+/// command is the canonical env-assignment form and a wrapping quote
+/// would defeat it). Names are not quoted: validation enforces the
+/// POSIX-portable identifier pattern (§2.9), which never needs
+/// shell-quoting.
+fn env_tokens_quoted(env_ops: &[EnvOp]) -> Result<Vec<String>> {
+    let mut parts: Vec<String> = Vec::with_capacity(env_ops.len() * 2);
+    // Unsets first, in source order.
+    for op in env_ops {
+        if let EnvOp::Unset { name } = op {
+            parts.push("-u".to_string());
+            parts.push(name.clone());
+        }
+    }
+    // Sets second, in source order.
+    for op in env_ops {
+        if let EnvOp::Set { name, value } = op {
+            let qv = shlex::try_quote(value)
+                .map_err(|_| Error::ArgumentContainsNul {
+                    value: value.clone(),
+                })?
+                .into_owned();
+            parts.push(format!("{name}={qv}"));
+        }
+    }
+    Ok(parts)
 }
 
 /// Render just the argument tokens (no program, no pass-through),
@@ -136,6 +185,19 @@ pub fn to_dry_run(program: &str, args: &[Argument], passthrough: &[OsString]) ->
 /// NUL byte.
 pub fn format_args(args: &[Argument]) -> Result<String> {
     shell_join(&args_to_tokens(args))
+}
+
+/// Render env-var operations as a `--list` line: `-u UNSET NAME=value`,
+/// space-joined. Used by `--list` per `SPEC.md` §7.1. Returns an
+/// empty string for an empty input. Values that need shell-quoting
+/// are quoted; names are not (they're POSIX-portable per §2.9).
+///
+/// # Errors
+///
+/// Returns [`Error::ArgumentContainsNul`] if any value contains a
+/// NUL byte.
+pub fn format_env(env_ops: &[EnvOp]) -> Result<String> {
+    Ok(env_tokens_quoted(env_ops)?.join(" "))
 }
 
 #[cfg(test)]
@@ -247,14 +309,14 @@ mod tests {
             FlagKey::Inferred("host".into()),
             FlagValue::Literal("0.0.0.0".into()),
         )];
-        let s = to_dry_run("llama-server", &args, &[]).unwrap();
+        let s = to_dry_run("llama-server", &args, &[], &[]).unwrap();
         assert_eq!(s, "llama-server --host 0.0.0.0");
     }
 
     #[test]
     fn dry_run_quotes_spaces() {
         let args = vec![Argument::Positional("/path with spaces/file".into())];
-        let s = to_dry_run("foo", &args, &[]).unwrap();
+        let s = to_dry_run("foo", &args, &[], &[]).unwrap();
         // shlex picks single-quoting for values with shell-significant chars
         assert!(s.contains("'/path with spaces/file'"));
     }
@@ -262,7 +324,7 @@ mod tests {
     #[test]
     fn dry_run_quotes_glob_chars() {
         let args = vec![Argument::Positional("*.txt".into())];
-        let s = to_dry_run("foo", &args, &[]).unwrap();
+        let s = to_dry_run("foo", &args, &[], &[]).unwrap();
         assert!(s.contains("'*.txt'"));
     }
 
@@ -272,13 +334,13 @@ mod tests {
             FlagKey::Inferred("flash-attn".into()),
             FlagValue::Bool(true),
         )];
-        let s = to_dry_run("foo", &args, &[]).unwrap();
+        let s = to_dry_run("foo", &args, &[], &[]).unwrap();
         assert_eq!(s, "foo --flash-attn");
     }
 
     #[test]
     fn dry_run_passthrough_quotes_when_needed() {
-        let s = to_dry_run("foo", &[], &[OsString::from("a b")]).unwrap();
+        let s = to_dry_run("foo", &[], &[OsString::from("a b")], &[]).unwrap();
         assert_eq!(s, "foo 'a b'");
     }
 
@@ -287,7 +349,7 @@ mod tests {
     fn dry_run_errors_on_non_utf8_passthrough() {
         use std::os::unix::ffi::OsStringExt;
         let invalid = OsString::from_vec(vec![0xff, 0xfe]);
-        let err = to_dry_run("foo", &[], &[invalid]).unwrap_err();
+        let err = to_dry_run("foo", &[], &[invalid], &[]).unwrap_err();
         assert!(matches!(err, Error::PassthroughNotUtf8 { .. }));
     }
 
@@ -311,5 +373,81 @@ mod tests {
     #[test]
     fn format_args_empty_for_no_defaults() {
         assert_eq!(format_args(&[]).unwrap(), "");
+    }
+
+    // --- env-var rendering (--dry-run + --list) ---
+
+    #[test]
+    fn dry_run_with_env_set_only() {
+        let env_ops = vec![
+            EnvOp::Set {
+                name: "A".into(),
+                value: "1".into(),
+            },
+            EnvOp::Set {
+                name: "B".into(),
+                value: "two words".into(),
+            },
+        ];
+        let s = to_dry_run("foo", &[], &[], &env_ops).unwrap();
+        // The K= prefix is left bare so the assignment shape is
+        // preserved; only the value is shell-quoted when needed.
+        assert_eq!(s, "env A=1 B='two words' foo");
+    }
+
+    #[test]
+    fn dry_run_with_env_unset_only() {
+        let env_ops = vec![EnvOp::Unset { name: "OLD".into() }];
+        let s = to_dry_run("foo", &[], &[], &env_ops).unwrap();
+        assert_eq!(s, "env -u OLD foo");
+    }
+
+    #[test]
+    fn dry_run_with_env_mixed_unsets_first() {
+        let env_ops = vec![
+            EnvOp::Set {
+                name: "A".into(),
+                value: "1".into(),
+            },
+            EnvOp::Unset { name: "OLD".into() },
+            EnvOp::Set {
+                name: "B".into(),
+                value: "2".into(),
+            },
+        ];
+        let s = to_dry_run("foo", &[], &[], &env_ops).unwrap();
+        // Unsets always come before sets, irrespective of source
+        // order, so `env(1)` parsing is unambiguous.
+        assert_eq!(s, "env -u OLD A=1 B=2 foo");
+    }
+
+    #[test]
+    fn dry_run_no_env_unchanged() {
+        // Without env ops, the prefix is omitted entirely.
+        let args = vec![flag(
+            FlagKey::Inferred("host".into()),
+            FlagValue::Literal("x".into()),
+        )];
+        let s = to_dry_run("foo", &args, &[], &[]).unwrap();
+        assert_eq!(s, "foo --host x");
+    }
+
+    #[test]
+    fn format_env_drops_leading_env_marker() {
+        // For --list, the `env:` label conveys what `env(1)` would,
+        // so format_env strips the literal `env` prefix token.
+        let env_ops = vec![
+            EnvOp::Unset { name: "OLD".into() },
+            EnvOp::Set {
+                name: "A".into(),
+                value: "1".into(),
+            },
+        ];
+        assert_eq!(format_env(&env_ops).unwrap(), "-u OLD A=1");
+    }
+
+    #[test]
+    fn format_env_empty_for_no_ops() {
+        assert_eq!(format_env(&[]).unwrap(), "");
     }
 }

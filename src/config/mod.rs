@@ -38,6 +38,10 @@ pub struct Command {
     /// See `IMPLEMENTATION.md` §7.3.1 for why this is one list
     /// rather than two collections.
     pub children: Vec<CommandChild>,
+    /// Default-side env-var contributions (`SPEC.md` §2.10), in
+    /// source order. Travels on a parallel channel from `children`
+    /// because env vars do not appear on the resolved argv.
+    pub env: Vec<EnvEntry>,
 }
 
 /// One child of a command node — either a default argument or a
@@ -54,8 +58,12 @@ pub enum CommandChild {
         name: String,
         /// Source span of `name`.
         name_span: SourceSpan,
-        /// Profile body, in source order.
+        /// Profile body's argument-shaped contributions
+        /// (flags / positionals), in source order.
         args: Vec<Argument>,
+        /// Profile body's env-var contributions (`SPEC.md` §2.10),
+        /// in source order.
+        env: Vec<EnvEntry>,
     },
 }
 
@@ -142,6 +150,32 @@ pub enum FlagValue {
     /// source text rather than parsed numeric form to avoid
     /// precision loss on floats and integer-vs-float ambiguity.
     Literal(String),
+}
+
+/// One env-var contribution declared via `(env)NAME ...` in a
+/// command body or a profile body. Per `SPEC.md` §2.10.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvEntry {
+    /// The env-var name (the KDL node name, with the `(env)`
+    /// annotation stripped).
+    pub name: String,
+    /// Source span of `name`.
+    pub name_span: SourceSpan,
+    /// The contribution's outcome.
+    pub value: EnvValue,
+}
+
+/// The outcome an `(env)` declaration contributes for its name:
+/// either set the variable to a value, or unset it on the child.
+/// Per `SPEC.md` §2.10 / §2.11.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnvValue {
+    /// `(env)NAME "value"` — set the variable to `value` on the
+    /// child. Stored as the source-text representation, like
+    /// [`FlagValue::Literal`], so floats round-trip exactly.
+    Set(String),
+    /// `(env)NAME #false` — call `env_remove(NAME)` on the child.
+    Unset,
 }
 
 #[cfg(test)]

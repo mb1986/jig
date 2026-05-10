@@ -1,0 +1,13 @@
+---
+source: src/errors.rs
+expression: render_for_snapshot(&err)
+---
+  × env-var name "FOO-BAR" is not a valid POSIX-portable identifier
+   ╭─[jig.kdl:2:8]
+ 1 │ foo {
+ 2 │   (env)"FOO-BAR" "x"
+   ·        ────┬────
+   ·            ╰── invalid env-var name
+ 3 │ }
+   ╰────
+  help: env-var names must match `[A-Za-z_][A-Za-z0-9_]*` (start with a letter or underscore, then letters / digits / underscores)

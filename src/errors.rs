@@ -182,6 +182,146 @@ pub enum Error {
         span: SourceSpan,
     },
 
+    /// A KDL node carries a type annotation (`(name)node ...`) that
+    /// is not recognized in this position. The only annotation
+    /// defined in v1 is `(env)` on argument-shaped nodes inside a
+    /// command or profile body.
+    #[error("unknown type annotation `({annotation})`")]
+    #[diagnostic(help(
+        "the only annotation supported in v1 is `(env)`, on a node inside a command or profile body declaring an environment variable"
+    ))]
+    UnknownTypeAnnotation {
+        /// The annotation text as written (without the surrounding
+        /// parentheses).
+        annotation: String,
+        /// Source the span points into.
+        #[source_code]
+        src: NamedSource<String>,
+        /// Span of the annotation.
+        #[label("not a recognized annotation here")]
+        span: SourceSpan,
+    },
+
+    /// An `(env)`-annotated node has a child block (`{ ... }`).
+    /// Env-var declarations carry exactly one value; they do not
+    /// have profile-like bodies.
+    #[error("`(env)` declaration must not have a child block")]
+    #[diagnostic(help(
+        "an env-var declaration is `(env)NAME \"value\"` or `(env)NAME #false`; remove the `{{ ... }}` block"
+    ))]
+    EnvOnNodeWithChildren {
+        /// Source the span points into.
+        #[source_code]
+        src: NamedSource<String>,
+        /// Span of the offending node name.
+        #[label("env declaration with body")]
+        span: SourceSpan,
+    },
+
+    /// An `(env)`-annotated node has no value. Env vars require
+    /// either a string/number value or the literal `#false` (unset).
+    #[error("`(env)` declaration requires a value")]
+    #[diagnostic(help(
+        "write `(env)NAME \"value\"` to set the variable or `(env)NAME #false` to unset it"
+    ))]
+    EnvNoValue {
+        /// Source the span points into.
+        #[source_code]
+        src: NamedSource<String>,
+        /// Span of the offending node name.
+        #[label("env declaration with no value")]
+        span: SourceSpan,
+    },
+
+    /// An `(env)`-annotated node carries more than one value. An env
+    /// declaration takes exactly one value (string / number) or
+    /// `#false` to unset.
+    #[error("`(env)` declaration has multiple values; expected exactly one")]
+    #[diagnostic(help(
+        "write `(env)NAME \"value\"` with a single value, or `(env)NAME #false` to unset"
+    ))]
+    EnvMultipleValues {
+        /// Source the span points into.
+        #[source_code]
+        src: NamedSource<String>,
+        /// Span of the offending extra value.
+        #[label("extra value here")]
+        span: SourceSpan,
+    },
+
+    /// An `(env)`-annotated node has a value of a kind that does
+    /// not make sense for an env var (`#true`, `#null`).
+    #[error("`(env)` declaration has an invalid value")]
+    #[diagnostic(help(
+        "use a string/number for a literal value (e.g. `(env)PORT \"8090\"`) or `#false` to unset; `#true` and `#null` are not valid"
+    ))]
+    EnvInvalidValue {
+        /// Source the span points into.
+        #[source_code]
+        src: NamedSource<String>,
+        /// Span of the offending value.
+        #[label("not a valid env value")]
+        span: SourceSpan,
+    },
+
+    /// An `(env)`-annotated node was written with the `+` explicit
+    /// append marker. Env vars do not repeat (POSIX assigns one
+    /// value per name) so the marker is meaningless on them.
+    #[error("the `+` append marker is not allowed on `(env)` declarations")]
+    #[diagnostic(help(
+        "remove the leading `+` — env vars take a single value per name; declare the variable once per scope"
+    ))]
+    EnvWithAppendMarker {
+        /// Source the span points into.
+        #[source_code]
+        src: NamedSource<String>,
+        /// Span of the offending node name.
+        #[label("`+` on env declaration")]
+        span: SourceSpan,
+    },
+
+    /// An `(env)`-declared variable has a name that does not match
+    /// the POSIX-portable env-var pattern `[A-Za-z_][A-Za-z0-9_]*`.
+    #[error("env-var name {name:?} is not a valid POSIX-portable identifier")]
+    #[diagnostic(help(
+        "env-var names must match `[A-Za-z_][A-Za-z0-9_]*` (start with a letter or underscore, then letters / digits / underscores)"
+    ))]
+    EnvNameInvalid {
+        /// The offending name.
+        name: String,
+        /// Source the span points into.
+        #[source_code]
+        src: NamedSource<String>,
+        /// Span of the offending name.
+        #[label("invalid env-var name")]
+        span: SourceSpan,
+    },
+
+    /// Two `(env)` declarations share a name within a single scope
+    /// (one command's defaults, or one profile body). Per
+    /// `SPEC.md` §2.9.
+    #[error("env-var {name:?} is declared more than once in {scope}")]
+    #[diagnostic(help(
+        "each env-var name may appear at most once per scope; combine the declarations or move one to a profile to override"
+    ))]
+    DuplicateEnvName {
+        /// The offending env-var name.
+        name: String,
+        /// A short description of the scope (e.g. "command \"foo\"
+        /// defaults" or "profile \"fast\" of command \"foo\"") for
+        /// the diagnostic message.
+        scope: String,
+        /// Source the spans point into.
+        #[source_code]
+        src: NamedSource<String>,
+        /// Span of the first declaration.
+        #[label("first declared here")]
+        first: SourceSpan,
+        /// Span of the second declaration.
+        #[label("also declared here")]
+        second: SourceSpan,
+    },
+
     /// Two top-level commands share the same name but at least one
     /// occurrence is missing an alias. Per `SPEC.md` §2.9 a
     /// duplicated command name is permitted only when every
@@ -389,6 +529,14 @@ impl Error {
             | Self::LeadingDashName { .. }
             | Self::LeadingPlusName { .. }
             | Self::EmptyKeyAfterMarker { .. }
+            | Self::UnknownTypeAnnotation { .. }
+            | Self::EnvOnNodeWithChildren { .. }
+            | Self::EnvNoValue { .. }
+            | Self::EnvMultipleValues { .. }
+            | Self::EnvInvalidValue { .. }
+            | Self::EnvWithAppendMarker { .. }
+            | Self::EnvNameInvalid { .. }
+            | Self::DuplicateEnvName { .. }
             | Self::DuplicateCommandWithoutAlias { .. }
             | Self::DuplicateAlias { .. }
             | Self::CommandAliasCollision { .. }
@@ -612,6 +760,90 @@ mod tests {
     fn exec_not_found_renders() {
         let err = Error::ExecNotFound {
             program: "llama-server".to_string(),
+        };
+        insta::assert_snapshot!(render_for_snapshot(&err));
+    }
+
+    #[test]
+    fn unknown_type_annotation_renders() {
+        let src = NamedSource::new("jig.kdl", "foo {\n  (cwd)dir \"/x\"\n}\n".to_string());
+        let err = Error::UnknownTypeAnnotation {
+            annotation: "cwd".to_string(),
+            src,
+            span: SourceSpan::from((9, 3)),
+        };
+        insta::assert_snapshot!(render_for_snapshot(&err));
+    }
+
+    #[test]
+    fn env_no_value_renders() {
+        let src = NamedSource::new("jig.kdl", "foo {\n  (env)BARE\n}\n".to_string());
+        let err = Error::EnvNoValue {
+            src,
+            span: SourceSpan::from((13, 4)),
+        };
+        insta::assert_snapshot!(render_for_snapshot(&err));
+    }
+
+    #[test]
+    fn env_invalid_value_renders() {
+        let src = NamedSource::new("jig.kdl", "foo {\n  (env)X #true\n}\n".to_string());
+        let err = Error::EnvInvalidValue {
+            src,
+            span: SourceSpan::from((15, 5)),
+        };
+        insta::assert_snapshot!(render_for_snapshot(&err));
+    }
+
+    #[test]
+    fn env_with_append_marker_renders() {
+        let src = NamedSource::new("jig.kdl", "foo {\n  (env)+X \"y\"\n}\n".to_string());
+        let err = Error::EnvWithAppendMarker {
+            src,
+            span: SourceSpan::from((13, 2)),
+        };
+        insta::assert_snapshot!(render_for_snapshot(&err));
+    }
+
+    #[test]
+    fn env_name_invalid_renders() {
+        let src = NamedSource::new(
+            "jig.kdl",
+            "foo {\n  (env)\"FOO-BAR\" \"x\"\n}\n".to_string(),
+        );
+        let err = Error::EnvNameInvalid {
+            name: "FOO-BAR".to_string(),
+            src,
+            span: SourceSpan::from((13, 9)),
+        };
+        insta::assert_snapshot!(render_for_snapshot(&err));
+    }
+
+    #[test]
+    fn duplicate_env_name_renders() {
+        let src = NamedSource::new(
+            "jig.kdl",
+            "foo {\n  (env)X \"1\"\n  (env)X \"2\"\n}\n".to_string(),
+        );
+        let err = Error::DuplicateEnvName {
+            name: "X".to_string(),
+            scope: "command \"foo\" defaults".to_string(),
+            src,
+            first: SourceSpan::from((13, 1)),
+            second: SourceSpan::from((25, 1)),
+        };
+        insta::assert_snapshot!(render_for_snapshot(&err));
+    }
+
+    #[test]
+    fn env_on_node_with_children_renders() {
+        let src = NamedSource::new(
+            "jig.kdl",
+            "foo {\n  (env)X \"y\" {\n    inner\n  }\n}\n".to_string(),
+        );
+        let err = Error::EnvOnNodeWithChildren {
+            src,
+            span: SourceSpan::from((13, 1)),
         };
         insta::assert_snapshot!(render_for_snapshot(&err));
     }

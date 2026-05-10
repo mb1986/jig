@@ -10,16 +10,22 @@
 //! - §2.5 (key with explicit dash → verbatim; otherwise → inferred;
 //!   leading `+` on a flag key is the explicit append marker)
 //! - §2.6 (positionals)
+//! - §2.10 (`(env)` type annotation declares an env-var contribution
+//!   on a node inside a command body or profile body)
 //!
 //! Constraint enforcement (`SPEC.md` §2.9) is the validator's job.
 //! This module emits only structural errors: flags with multiple
 //! values, KDL properties on any node, an empty key after stripping
-//! a `+` marker, and propagated `kdl::KdlError` syntax failures.
+//! a `+` marker, propagated `kdl::KdlError` syntax failures, and
+//! the env-shape rejections listed in §2.10 (children on an `(env)`
+//! node, missing or invalid value, `+` marker, unknown annotation).
 
 use kdl::{KdlDocument, KdlEntry, KdlNode, KdlValue};
 use miette::NamedSource;
 
-use super::{Argument, Command, CommandChild, Config, FlagKey, FlagMode, FlagValue};
+use super::{
+    Argument, Command, CommandChild, Config, EnvEntry, EnvValue, FlagKey, FlagMode, FlagValue,
+};
 use crate::errors::{Error, Result};
 
 /// Parse a KDL document string into a [`Config`].
@@ -48,6 +54,9 @@ pub fn parse_str(content: &str, path: &str) -> Result<Config> {
 
 fn parse_command(node: &KdlNode, src: &NamedSource<String>) -> Result<Command> {
     reject_properties(node, src)?;
+    // Top-level nodes are commands; no type annotation is meaningful
+    // here, so reject any (`(env)` or otherwise).
+    reject_any_annotation(node, src)?;
 
     let name = node.name().value().to_string();
     let name_span = node.name().span();
@@ -70,9 +79,9 @@ fn parse_command(node: &KdlNode, src: &NamedSource<String>) -> Result<Command> {
         }
     };
 
-    let children = match node.children() {
-        Some(doc) => parse_command_children(doc, src)?,
-        None => Vec::new(),
+    let (children, env) = match node.children() {
+        Some(doc) => parse_command_body(doc, src)?,
+        None => (Vec::new(), Vec::new()),
     };
 
     Ok(Command {
@@ -81,46 +90,89 @@ fn parse_command(node: &KdlNode, src: &NamedSource<String>) -> Result<Command> {
         alias,
         alias_span,
         children,
+        env,
     })
 }
 
-fn parse_command_children(
+/// Parse the body of a command node — defaults, profiles, and
+/// `(env)` declarations all interleaved. Returns the source-ordered
+/// `children` list (defaults + profiles) and the source-ordered
+/// `env` list separately, since env contributions travel on a
+/// parallel channel from argv (`SPEC.md` §2.10 / §2.11).
+fn parse_command_body(
     doc: &KdlDocument,
     src: &NamedSource<String>,
-) -> Result<Vec<CommandChild>> {
-    let mut out = Vec::with_capacity(doc.nodes().len());
+) -> Result<(Vec<CommandChild>, Vec<EnvEntry>)> {
+    let mut children: Vec<CommandChild> = Vec::with_capacity(doc.nodes().len());
+    let mut env: Vec<EnvEntry> = Vec::new();
     for node in doc.nodes() {
-        out.push(parse_command_child(node, src)?);
+        match classify_annotation(node, src)? {
+            AnnotationKind::Env => {
+                // `(env)` only makes sense on a node-without-children
+                // (it carries a single value or `#false`).
+                if node.children().is_some() {
+                    return Err(Error::EnvOnNodeWithChildren {
+                        src: src.clone(),
+                        span: node.name().span(),
+                    });
+                }
+                env.push(parse_env_entry(node, src)?);
+            }
+            AnnotationKind::None => {
+                if let Some(child_doc) = node.children() {
+                    // Has children → profile.
+                    reject_properties(node, src)?;
+                    if let Some(extra) = node.entries().iter().find(|e| e.name().is_none()) {
+                        return Err(Error::FlagMultipleValues {
+                            src: src.clone(),
+                            span: extra.span(),
+                        });
+                    }
+                    let name = node.name().value().to_string();
+                    let name_span = node.name().span();
+                    let (args, profile_env) = parse_profile_body(child_doc, src)?;
+                    children.push(CommandChild::Profile {
+                        name,
+                        name_span,
+                        args,
+                        env: profile_env,
+                    });
+                } else {
+                    // No children, no annotation → default argument.
+                    children.push(CommandChild::Default(parse_argument(node, src)?));
+                }
+            }
+        }
     }
-    Ok(out)
+    Ok((children, env))
 }
 
-fn parse_command_child(node: &KdlNode, src: &NamedSource<String>) -> Result<CommandChild> {
-    if let Some(child_doc) = node.children() {
-        // Has children → profile.
-        reject_properties(node, src)?;
-        // A profile node may not carry values of its own.
-        if let Some(extra) = node.entries().iter().find(|e| e.name().is_none()) {
-            return Err(Error::FlagMultipleValues {
-                src: src.clone(),
-                span: extra.span(),
-            });
+/// Parse the body of a profile node — arguments and `(env)`
+/// declarations interleaved. Profiles do not nest in v1; a node
+/// with children inside a profile body falls through to the
+/// argument path (its children are silently ignored, matching
+/// the pre-§2.10 behavior).
+fn parse_profile_body(
+    doc: &KdlDocument,
+    src: &NamedSource<String>,
+) -> Result<(Vec<Argument>, Vec<EnvEntry>)> {
+    let mut args: Vec<Argument> = Vec::with_capacity(doc.nodes().len());
+    let mut env: Vec<EnvEntry> = Vec::new();
+    for node in doc.nodes() {
+        match classify_annotation(node, src)? {
+            AnnotationKind::Env => {
+                if node.children().is_some() {
+                    return Err(Error::EnvOnNodeWithChildren {
+                        src: src.clone(),
+                        span: node.name().span(),
+                    });
+                }
+                env.push(parse_env_entry(node, src)?);
+            }
+            AnnotationKind::None => args.push(parse_argument(node, src)?),
         }
-        let name = node.name().value().to_string();
-        let name_span = node.name().span();
-        let mut args = Vec::with_capacity(child_doc.nodes().len());
-        for arg_node in child_doc.nodes() {
-            args.push(parse_argument(arg_node, src)?);
-        }
-        Ok(CommandChild::Profile {
-            name,
-            name_span,
-            args,
-        })
-    } else {
-        // No children → default argument (flag or positional).
-        Ok(CommandChild::Default(parse_argument(node, src)?))
     }
+    Ok((args, env))
 }
 
 fn parse_argument(node: &KdlNode, src: &NamedSource<String>) -> Result<Argument> {
@@ -162,6 +214,103 @@ fn parse_argument(node: &KdlNode, src: &NamedSource<String>) -> Result<Argument>
             span: extra.span(),
         }),
     }
+}
+
+/// Build an [`EnvEntry`] from a node bearing the `(env)` annotation.
+/// The caller guarantees `node.children().is_none()` and the
+/// annotation is `(env)`.
+fn parse_env_entry(node: &KdlNode, src: &NamedSource<String>) -> Result<EnvEntry> {
+    reject_properties(node, src)?;
+
+    // The `+` append marker is meaningless for env vars (POSIX
+    // assigns one value per name); reject before stripping.
+    let raw = node.name().value();
+    if raw.starts_with('+') {
+        return Err(Error::EnvWithAppendMarker {
+            src: src.clone(),
+            span: node.name().span(),
+        });
+    }
+
+    let values: Vec<&KdlEntry> = node
+        .entries()
+        .iter()
+        .filter(|e| e.name().is_none())
+        .collect();
+    let entry = match values.as_slice() {
+        [] => {
+            return Err(Error::EnvNoValue {
+                src: src.clone(),
+                span: node.name().span(),
+            });
+        }
+        [entry] => *entry,
+        [_first, extra, ..] => {
+            return Err(Error::EnvMultipleValues {
+                src: src.clone(),
+                span: extra.span(),
+            });
+        }
+    };
+
+    let value = match entry.value() {
+        KdlValue::Bool(false) => EnvValue::Unset,
+        KdlValue::Bool(true) | KdlValue::Null => {
+            return Err(Error::EnvInvalidValue {
+                src: src.clone(),
+                span: entry.span(),
+            });
+        }
+        KdlValue::String(s) => EnvValue::Set(s.clone()),
+        other => EnvValue::Set(
+            entry
+                .format()
+                .map(|f| f.value_repr.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| other.to_string()),
+        ),
+    };
+
+    Ok(EnvEntry {
+        name: raw.to_string(),
+        name_span: node.name().span(),
+        value,
+    })
+}
+
+/// Annotation routing for command-body / profile-body nodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnnotationKind {
+    None,
+    Env,
+}
+
+/// Classify a node's `(ty)` annotation. `None` and `(env)` are the
+/// two recognized states inside a command or profile body. Any
+/// other annotation produces an [`Error::UnknownTypeAnnotation`].
+fn classify_annotation(node: &KdlNode, src: &NamedSource<String>) -> Result<AnnotationKind> {
+    match node.ty() {
+        None => Ok(AnnotationKind::None),
+        Some(id) if id.value() == "env" => Ok(AnnotationKind::Env),
+        Some(id) => Err(Error::UnknownTypeAnnotation {
+            annotation: id.value().to_string(),
+            src: src.clone(),
+            span: id.span(),
+        }),
+    }
+}
+
+/// Reject any type annotation on a node where none is meaningful
+/// (top-level commands).
+fn reject_any_annotation(node: &KdlNode, src: &NamedSource<String>) -> Result<()> {
+    if let Some(id) = node.ty() {
+        return Err(Error::UnknownTypeAnnotation {
+            annotation: id.value().to_string(),
+            src: src.clone(),
+            span: id.span(),
+        });
+    }
+    Ok(())
 }
 
 fn classify_flag_key(raw: &str) -> FlagKey {
@@ -562,6 +711,162 @@ mod tests {
         assert_eq!(cmd.alias.as_deref(), Some("serve"));
         // 4 defaults + 2 profiles
         assert_eq!(cmd.children.len(), 6);
+    }
+
+    // --- §2.10 env-var declarations ---
+
+    #[test]
+    fn env_string_value_in_defaults() {
+        let cfg = parse(r#"foo { (env)OLLAMA_HOST "0.0.0.0" }"#).unwrap();
+        let cmd = &cfg.commands[0];
+        assert_eq!(cmd.env.len(), 1);
+        assert_eq!(cmd.env[0].name, "OLLAMA_HOST");
+        assert_eq!(cmd.env[0].value, EnvValue::Set("0.0.0.0".to_string()));
+        // The argv-side children list does not see env declarations.
+        assert!(cmd.children.is_empty());
+    }
+
+    #[test]
+    fn env_integer_value_uses_source_repr() {
+        let cfg = parse(r"foo { (env)PORT 8090 }").unwrap();
+        let cmd = &cfg.commands[0];
+        assert_eq!(cmd.env[0].value, EnvValue::Set("8090".to_string()));
+    }
+
+    #[test]
+    fn env_float_value_uses_source_repr() {
+        let cfg = parse(r"foo { (env)RATIO 0.5 }").unwrap();
+        let cmd = &cfg.commands[0];
+        assert_eq!(cmd.env[0].value, EnvValue::Set("0.5".to_string()));
+    }
+
+    #[test]
+    fn env_false_means_unset() {
+        let cfg = parse(r"foo { (env)FOO #false }").unwrap();
+        let cmd = &cfg.commands[0];
+        assert_eq!(cmd.env[0].value, EnvValue::Unset);
+    }
+
+    #[test]
+    fn env_in_profile_body() {
+        let cfg = parse(
+            r#"foo {
+                bar {
+                    (env)BAZ "1"
+                    (env)QUX #false
+                    flag "v"
+                }
+            }"#,
+        )
+        .unwrap();
+        let CommandChild::Profile { args, env, .. } = &cfg.commands[0].children[0] else {
+            panic!("expected profile");
+        };
+        assert_eq!(env.len(), 2);
+        assert_eq!(env[0].name, "BAZ");
+        assert_eq!(env[0].value, EnvValue::Set("1".to_string()));
+        assert_eq!(env[1].name, "QUX");
+        assert_eq!(env[1].value, EnvValue::Unset);
+        // The profile's argv-side args contain only the flag.
+        assert_eq!(args.len(), 1);
+    }
+
+    #[test]
+    fn env_with_no_value_errors() {
+        let err = parse(r"foo { (env)BARE }").unwrap_err();
+        assert!(matches!(err, Error::EnvNoValue { .. }));
+    }
+
+    #[test]
+    fn env_true_value_errors() {
+        let err = parse(r"foo { (env)FOO #true }").unwrap_err();
+        assert!(matches!(err, Error::EnvInvalidValue { .. }));
+    }
+
+    #[test]
+    fn env_null_value_errors() {
+        let err = parse(r"foo { (env)FOO #null }").unwrap_err();
+        assert!(matches!(err, Error::EnvInvalidValue { .. }));
+    }
+
+    #[test]
+    fn env_with_children_errors() {
+        let err = parse(
+            r#"foo {
+                (env)FOO "x" {
+                    inner "y"
+                }
+            }"#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::EnvOnNodeWithChildren { .. }));
+    }
+
+    #[test]
+    fn env_with_children_no_value_errors_with_children_diagnostic() {
+        // A profile-shaped form (children but no value) on an env
+        // declaration must still surface as `EnvOnNodeWithChildren`,
+        // not `EnvNoValue` — the user's intent is closer to "I tried
+        // to nest a profile here" than "I forgot a value".
+        let err = parse(
+            r"foo {
+                (env)FOO {
+                    inner
+                }
+            }",
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::EnvOnNodeWithChildren { .. }));
+    }
+
+    #[test]
+    fn env_multiple_values_errors() {
+        let err = parse(r#"foo { (env)FOO "a" "b" }"#).unwrap_err();
+        assert!(matches!(err, Error::EnvMultipleValues { .. }));
+    }
+
+    #[test]
+    fn env_with_append_marker_errors() {
+        // `+` on an env declaration is meaningless; reject.
+        let err = parse(r#"foo { (env)+FOO "x" }"#).unwrap_err();
+        assert!(matches!(err, Error::EnvWithAppendMarker { .. }));
+    }
+
+    #[test]
+    fn unknown_annotation_errors() {
+        let err = parse(r#"foo { (cwd)dir "/path" }"#).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::UnknownTypeAnnotation { ref annotation, .. } if annotation == "cwd"
+        ));
+    }
+
+    #[test]
+    fn annotation_on_top_level_command_errors() {
+        let err = parse(r#"(env)foo "x" {}"#).unwrap_err();
+        assert!(matches!(err, Error::UnknownTypeAnnotation { .. }));
+    }
+
+    #[test]
+    fn env_alongside_flags_in_same_body() {
+        // Source-order interleaving of flags and env decls works:
+        // the parser sorts them into separate vecs but each retains
+        // its own intra-list order.
+        let cfg = parse(
+            r#"foo {
+                host "0.0.0.0"
+                (env)A "1"
+                port 8090
+                (env)B "2"
+            }"#,
+        )
+        .unwrap();
+        let cmd = &cfg.commands[0];
+        // Two flag defaults, two env entries; profiles is empty.
+        assert_eq!(cmd.children.len(), 2);
+        assert_eq!(cmd.env.len(), 2);
+        assert_eq!(cmd.env[0].name, "A");
+        assert_eq!(cmd.env[1].name, "B");
     }
 
     #[test]

@@ -1,0 +1,13 @@
+---
+source: src/errors.rs
+expression: render_for_snapshot(&err)
+---
+  × unknown type annotation `(cwd)`
+   ╭─[jig.kdl:2:4]
+ 1 │ foo {
+ 2 │   (cwd)dir "/x"
+   ·    ─┬─
+   ·     ╰── not a recognized annotation here
+ 3 │ }
+   ╰────
+  help: the only annotation supported in v1 is `(env)`, on a node inside a command or profile body declaring an environment variable

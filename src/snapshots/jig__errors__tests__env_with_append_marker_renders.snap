@@ -1,0 +1,13 @@
+---
+source: src/errors.rs
+expression: render_for_snapshot(&err)
+---
+  × the `+` append marker is not allowed on `(env)` declarations
+   ╭─[jig.kdl:2:8]
+ 1 │ foo {
+ 2 │   (env)+X "y"
+   ·        ─┬
+   ·         ╰── `+` on env declaration
+ 3 │ }
+   ╰────
+  help: remove the leading `+` — env vars take a single value per name; declare the variable once per scope

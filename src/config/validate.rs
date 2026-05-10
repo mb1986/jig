@@ -26,7 +26,7 @@ use std::collections::HashMap;
 
 use miette::{NamedSource, SourceSpan};
 
-use super::{CommandChild, Config};
+use super::{CommandChild, Config, EnvEntry};
 use crate::errors::{Error, Result};
 
 /// Validate `config` against `SPEC.md` §2.9. `src` is attached to
@@ -40,6 +40,7 @@ pub fn validate(config: &Config, src: &NamedSource<String>) -> Result<()> {
     check_reserved_name_prefixes(config, src)?;
     check_command_and_alias_names(config, src)?;
     check_profiles_within_each_command(config, src)?;
+    check_env_declarations(config, src)?;
     Ok(())
 }
 
@@ -215,6 +216,71 @@ fn check_profiles_within_each_command(config: &Config, src: &NamedSource<String>
         }
     }
     Ok(())
+}
+
+/// Per `SPEC.md` §2.9 / §2.10:
+///
+/// - Each `(env)` declaration's name must match the POSIX-portable
+///   pattern `[A-Za-z_][A-Za-z0-9_]*`.
+/// - Within each scope (the defaults of one command, or the body of
+///   one profile) every env-var name must be unique.
+fn check_env_declarations(config: &Config, src: &NamedSource<String>) -> Result<()> {
+    for cmd in &config.commands {
+        check_env_scope(&cmd.env, &format!("command {:?} defaults", cmd.name), src)?;
+        for child in &cmd.children {
+            if let CommandChild::Profile {
+                name: profile_name,
+                env,
+                ..
+            } = child
+            {
+                check_env_scope(
+                    env,
+                    &format!("profile {profile_name:?} of command {:?}", cmd.name),
+                    src,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn check_env_scope(entries: &[EnvEntry], scope: &str, src: &NamedSource<String>) -> Result<()> {
+    let mut seen: HashMap<&str, SourceSpan> = HashMap::new();
+    for entry in entries {
+        if !is_valid_env_name(&entry.name) {
+            return Err(Error::EnvNameInvalid {
+                name: entry.name.clone(),
+                src: src.clone(),
+                span: entry.name_span,
+            });
+        }
+        if let Some(&first) = seen.get(entry.name.as_str()) {
+            return Err(Error::DuplicateEnvName {
+                name: entry.name.clone(),
+                scope: scope.to_string(),
+                src: src.clone(),
+                first,
+                second: entry.name_span,
+            });
+        }
+        seen.insert(entry.name.as_str(), entry.name_span);
+    }
+    Ok(())
+}
+
+/// POSIX-portable env-var name: `[A-Za-z_][A-Za-z0-9_]*`. We keep
+/// the test inline rather than pull in a regex dependency for one
+/// pattern.
+fn is_valid_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 #[cfg(test)]
@@ -539,5 +605,107 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // --- §2.10 / §2.9 env-var validation ---
+
+    #[test]
+    fn env_valid_names_accepted() {
+        parse_and_validate(
+            r#"foo {
+                (env)OLLAMA_HOST "x"
+                (env)X1 "x"
+                (env)_PRIVATE "x"
+                (env)mixed_Case "x"
+            }"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn env_name_starting_with_digit_rejected() {
+        // KDL bare identifiers can't start with a digit, so the
+        // user must quote the name to even reach the validator.
+        let err = parse_and_validate(r#"foo { (env)"1FOO" "x" }"#).unwrap_err();
+        assert!(matches!(err, Error::EnvNameInvalid { ref name, .. } if name == "1FOO"));
+    }
+
+    #[test]
+    fn env_name_with_dash_rejected() {
+        let err = parse_and_validate(r#"foo { (env)"FOO-BAR" "x" }"#).unwrap_err();
+        assert!(matches!(err, Error::EnvNameInvalid { .. }));
+    }
+
+    #[test]
+    fn env_name_with_dot_rejected() {
+        let err = parse_and_validate(r#"foo { (env)"FOO.BAR" "x" }"#).unwrap_err();
+        assert!(matches!(err, Error::EnvNameInvalid { .. }));
+    }
+
+    #[test]
+    fn env_empty_name_rejected() {
+        // A quoted empty string as the node name plus `(env)` is
+        // structurally well-formed KDL; the validator must reject it.
+        let err = parse_and_validate(r#"foo { (env)"" "x" }"#).unwrap_err();
+        assert!(matches!(err, Error::EnvNameInvalid { .. }));
+    }
+
+    #[test]
+    fn duplicate_env_in_defaults_rejected() {
+        let err = parse_and_validate(
+            r#"foo {
+                (env)FOO "1"
+                (env)FOO "2"
+            }"#,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, Error::DuplicateEnvName { ref name, ref scope, .. }
+                if name == "FOO" && scope.contains("defaults"))
+        );
+    }
+
+    #[test]
+    fn duplicate_env_in_profile_rejected() {
+        let err = parse_and_validate(
+            r#"foo {
+                fast {
+                    (env)BAR "1"
+                    (env)BAR "2"
+                }
+            }"#,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::DuplicateEnvName { ref name, ref scope, .. }
+                if name == "BAR" && scope.contains("profile") && scope.contains("fast")
+        ));
+    }
+
+    #[test]
+    fn cross_scope_env_override_is_allowed() {
+        // Defaults declare `FOO`; a profile overrides it. This is
+        // the canonical override pattern and must validate.
+        parse_and_validate(
+            r#"foo {
+                (env)FOO "default"
+                fast {
+                    (env)FOO "override"
+                }
+            }"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn same_env_name_in_different_profiles_is_allowed() {
+        parse_and_validate(
+            r#"foo {
+                fast { (env)X "1" }
+                slow { (env)X "2" }
+            }"#,
+        )
+        .unwrap();
     }
 }

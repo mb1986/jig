@@ -27,13 +27,22 @@
 //!      → v1 first-occurrence positioning with profile-value
 //!      precedence) or repeat mode (otherwise → emit each at its
 //!      own source position).
+//! 5. Resolve env-var contributions on a parallel channel
+//!    (`SPEC.md` §2.11): walk the command's defaults env list, then
+//!    the selected profile's env list; for each name pick at most
+//!    one outcome — profile-side `Unset` wins over profile-side
+//!    `Set` wins over default-side `Unset` wins over default-side
+//!    `Set`. The outcome is emitted at the first-occurrence walk
+//!    position so `--list` and `--dry-run` order is deterministic.
 //!
 //! Positionals are not subject to override or suppression and are
 //! emitted at their walk position in source order.
 
 use std::collections::HashMap;
 
-use crate::config::{Argument, Command, CommandChild, Config, FlagMode, FlagValue};
+use crate::config::{
+    Argument, Command, CommandChild, Config, EnvEntry, EnvValue, FlagMode, FlagValue,
+};
 use crate::errors::{Error, Result};
 
 /// Output of a successful resolution.
@@ -43,6 +52,28 @@ pub struct Resolved {
     pub program: String,
     /// The candidate list after walk + collapse + suppression.
     pub args: Vec<Argument>,
+    /// Env-var outcomes to apply to the spawned child, in
+    /// first-occurrence walk order (`SPEC.md` §2.11).
+    pub env: Vec<EnvOp>,
+}
+
+/// One env-var operation to apply to the spawned child process via
+/// `Command::env` / `Command::env_remove`. Per `SPEC.md` §2.11 /
+/// §3.6.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnvOp {
+    /// Call `Command::env(name, value)`.
+    Set {
+        /// Variable name.
+        name: String,
+        /// Value to assign on the child.
+        value: String,
+    },
+    /// Call `Command::env_remove(name)`.
+    Unset {
+        /// Variable name.
+        name: String,
+    },
 }
 
 /// Resolve `name` and optional `profile` against `config`.
@@ -73,6 +104,17 @@ pub fn resolve(config: &Config, name: &str, profile: Option<&str>) -> Result<Res
             CommandChild::Profile { .. } => {}
         }
     }
+
+    // Resolve env-var contributions on a parallel channel.
+    let profile_env: &[EnvEntry] = selected_profile
+        .and_then(|p| {
+            cmd.children.iter().find_map(|c| match c {
+                CommandChild::Profile { name, env, .. } if name == p => Some(env.as_slice()),
+                _ => None,
+            })
+        })
+        .unwrap_or(&[]);
+    let env = resolve_env(&cmd.env, profile_env);
 
     // Step 2: group flag candidates by resolved CLI form, then
     // compute the emission plan per key. The plan records, for each
@@ -118,7 +160,83 @@ pub fn resolve(config: &Config, name: &str, profile: Option<&str>) -> Result<Res
     Ok(Resolved {
         program: cmd.name.clone(),
         args: out,
+        env,
     })
+}
+
+/// Resolve env-var outcomes per `SPEC.md` §2.11. Walks
+/// `defaults_env` then `profile_env`; for each distinct name,
+/// profile-side wins over default-side and `Unset` wins over `Set`
+/// on the same side. The outcome is emitted at the first-occurrence
+/// walk position.
+fn resolve_env(defaults_env: &[EnvEntry], profile_env: &[EnvEntry]) -> Vec<EnvOp> {
+    // First-occurrence ordering: stable index of first appearance
+    // per name across the (defaults, profile) walk.
+    let mut first_index: HashMap<&str, usize> = HashMap::new();
+    let mut order: Vec<&str> = Vec::new();
+    for entry in defaults_env.iter().chain(profile_env.iter()) {
+        if !first_index.contains_key(entry.name.as_str()) {
+            first_index.insert(entry.name.as_str(), order.len());
+            order.push(entry.name.as_str());
+        }
+    }
+
+    // Per-name resolution. For each name, pick the winning outcome
+    // by the precedence in §2.11.
+    let mut out: Vec<EnvOp> = Vec::with_capacity(order.len());
+    for name in order {
+        let outcome = pick_env_outcome(name, defaults_env, profile_env);
+        out.push(outcome);
+    }
+    out
+}
+
+fn pick_env_outcome(name: &str, defaults: &[EnvEntry], profile: &[EnvEntry]) -> EnvOp {
+    // Profile-side `Unset` wins over everything.
+    if profile
+        .iter()
+        .any(|e| e.name == name && matches!(e.value, EnvValue::Unset))
+    {
+        return EnvOp::Unset {
+            name: name.to_string(),
+        };
+    }
+    // Then profile-side `Set`. Validation enforces per-scope
+    // uniqueness, so at most one entry can match.
+    if let Some(value) = profile
+        .iter()
+        .find_map(|e| match (&e.value, e.name == name) {
+            (EnvValue::Set(v), true) => Some(v.clone()),
+            _ => None,
+        })
+    {
+        return EnvOp::Set {
+            name: name.to_string(),
+            value,
+        };
+    }
+    // Then default-side `Unset`.
+    if defaults
+        .iter()
+        .any(|e| e.name == name && matches!(e.value, EnvValue::Unset))
+    {
+        return EnvOp::Unset {
+            name: name.to_string(),
+        };
+    }
+    // Otherwise default-side `Set` (validation guarantees per-scope
+    // uniqueness, so at most one such entry exists).
+    let value = defaults
+        .iter()
+        .find_map(|e| match (&e.value, e.name == name) {
+            (EnvValue::Set(v), true) => Some(v.clone()),
+            _ => None,
+        })
+        .expect("invariant: name was added to `order` from one of the two slices");
+    EnvOp::Set {
+        name: name.to_string(),
+        value,
+    }
 }
 
 /// Per-key resolution per `SPEC.md` §2.8. Reads the candidates at
@@ -1197,6 +1315,188 @@ mod tests {
             flatten(&r),
             vec![("--host".into(), "a".into()), ("--host".into(), "b".into()),]
         );
+    }
+
+    // --- §2.10 / §2.11 env-var resolution ---
+
+    #[test]
+    fn env_defaults_only_no_profile() {
+        let cfg = parse(
+            r#"foo {
+                (env)A "1"
+                (env)B "2"
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", None).unwrap();
+        assert_eq!(
+            r.env,
+            vec![
+                EnvOp::Set {
+                    name: "A".into(),
+                    value: "1".into()
+                },
+                EnvOp::Set {
+                    name: "B".into(),
+                    value: "2".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn env_profile_only_when_no_defaults() {
+        let cfg = parse(
+            r#"foo {
+                fast {
+                    (env)X "y"
+                }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("fast")).unwrap();
+        assert_eq!(
+            r.env,
+            vec![EnvOp::Set {
+                name: "X".into(),
+                value: "y".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn env_profile_overrides_default() {
+        let cfg = parse(
+            r#"foo {
+                (env)A "default"
+                fast {
+                    (env)A "override"
+                }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("fast")).unwrap();
+        assert_eq!(
+            r.env,
+            vec![EnvOp::Set {
+                name: "A".into(),
+                value: "override".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn env_profile_unset_clears_default() {
+        let cfg = parse(
+            r#"foo {
+                (env)A "default"
+                clear {
+                    (env)A #false
+                }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("clear")).unwrap();
+        assert_eq!(r.env, vec![EnvOp::Unset { name: "A".into() }]);
+    }
+
+    #[test]
+    fn env_default_unset_passes_through_when_no_profile_override() {
+        let cfg = parse(
+            r"foo {
+                (env)PATH #false
+            }",
+        );
+        let r = resolve(&cfg, "foo", None).unwrap();
+        assert_eq!(
+            r.env,
+            vec![EnvOp::Unset {
+                name: "PATH".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn env_profile_set_overrides_default_unset() {
+        // Per §2.11 precedence: profile-side `Set` wins over
+        // default-side `Unset`. The default would otherwise call
+        // env_remove; the profile re-introduces the variable.
+        let cfg = parse(
+            r#"foo {
+                (env)A #false
+                fast {
+                    (env)A "from-profile"
+                }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("fast")).unwrap();
+        assert_eq!(
+            r.env,
+            vec![EnvOp::Set {
+                name: "A".into(),
+                value: "from-profile".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn env_empty_string_value_round_trips() {
+        // `""` is a meaningful POSIX env value (set, but empty),
+        // distinct from `#false` (unset). Pin that we don't drop it.
+        let cfg = parse(r#"foo { (env)A "" }"#);
+        let r = resolve(&cfg, "foo", None).unwrap();
+        assert_eq!(
+            r.env,
+            vec![EnvOp::Set {
+                name: "A".into(),
+                value: String::new()
+            }]
+        );
+    }
+
+    #[test]
+    fn env_first_occurrence_ordering_default_first() {
+        // Defaults define A then B; profile overrides B and adds C.
+        // Expected order: A, B, C — defaults' walk order then profile
+        // additions.
+        let cfg = parse(
+            r#"foo {
+                (env)A "1"
+                (env)B "2"
+                fast {
+                    (env)B "overridden"
+                    (env)C "3"
+                }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("fast")).unwrap();
+        assert_eq!(
+            r.env,
+            vec![
+                EnvOp::Set {
+                    name: "A".into(),
+                    value: "1".into()
+                },
+                EnvOp::Set {
+                    name: "B".into(),
+                    value: "overridden".into()
+                },
+                EnvOp::Set {
+                    name: "C".into(),
+                    value: "3".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn env_does_not_appear_in_args() {
+        // §2.10: env decls do not appear on the resolved argv.
+        let cfg = parse(
+            r#"foo {
+                host "0.0.0.0"
+                (env)OLLAMA_HOST "1"
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", None).unwrap();
+        assert_eq!(flatten(&r), vec![("--host".into(), "0.0.0.0".into())]);
+        assert_eq!(r.env.len(), 1);
     }
 
     #[test]

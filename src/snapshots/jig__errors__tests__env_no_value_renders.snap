@@ -1,0 +1,13 @@
+---
+source: src/errors.rs
+expression: render_for_snapshot(&err)
+---
+  × `(env)` declaration requires a value
+   ╭─[jig.kdl:2:8]
+ 1 │ foo {
+ 2 │   (env)BARE
+   ·        ──┬─
+   ·          ╰── env declaration with no value
+ 3 │ }
+   ╰────
+  help: write `(env)NAME "value"` to set the variable or `(env)NAME #false` to unset it

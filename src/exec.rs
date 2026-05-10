@@ -23,9 +23,15 @@ use std::io;
 use std::process::{Command, ExitStatus};
 
 use crate::errors::{Error, Result};
+use crate::resolve::EnvOp;
 
-/// Spawn `program` with `args` (inheriting stdio), wait, and
-/// return the exit code to propagate to the caller of `jig`.
+/// Spawn `program` with `args` (inheriting stdio), apply `env_ops`
+/// to the child's environment per `SPEC.md` §3.6, wait, and return
+/// the exit code to propagate to the caller of `jig`.
+///
+/// `env_ops` is a list of [`EnvOp::Set`] / [`EnvOp::Unset`] entries
+/// that layer on top of the inherited environment; `jig` never
+/// wholesale-clears the env (`Command::env_clear`).
 ///
 /// # Errors
 ///
@@ -33,8 +39,20 @@ use crate::errors::{Error, Result};
 /// [`Error::ExecNotExecutable`] if it is found but not executable,
 /// or [`Error::ExecSpawnFailed`] for any other I/O failure during
 /// spawn.
-pub fn run(program: &str, args: &[OsString]) -> Result<i32> {
-    let status = Command::new(OsStr::new(program)).args(args).status();
+pub fn run(program: &str, args: &[OsString], env_ops: &[EnvOp]) -> Result<i32> {
+    let mut cmd = Command::new(OsStr::new(program));
+    cmd.args(args);
+    for op in env_ops {
+        match op {
+            EnvOp::Set { name, value } => {
+                cmd.env(name, value);
+            }
+            EnvOp::Unset { name } => {
+                cmd.env_remove(name);
+            }
+        }
+    }
+    let status = cmd.status();
     match status {
         Ok(s) => Ok(extract_exit_code(s)),
         Err(e) => Err(map_spawn_error(program, e)),

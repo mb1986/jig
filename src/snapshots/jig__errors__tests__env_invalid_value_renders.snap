@@ -1,0 +1,13 @@
+---
+source: src/errors.rs
+expression: render_for_snapshot(&err)
+---
+  × `(env)` declaration has an invalid value
+   ╭─[jig.kdl:2:10]
+ 1 │ foo {
+ 2 │   (env)X #true
+   ·          ──┬──
+   ·            ╰── not a valid env value
+ 3 │ }
+   ╰────
+  help: use a string/number for a literal value (e.g. `(env)PORT "8090"`) or `#false` to unset; `#true` and `#null` are not valid

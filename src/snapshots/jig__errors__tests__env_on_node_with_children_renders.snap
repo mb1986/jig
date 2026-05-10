@@ -1,0 +1,13 @@
+---
+source: src/errors.rs
+expression: render_for_snapshot(&err)
+---
+  × `(env)` declaration must not have a child block
+   ╭─[jig.kdl:2:8]
+ 1 │ foo {
+ 2 │   (env)X "y" {
+   ·        ┬
+   ·        ╰── env declaration with body
+ 3 │     inner
+   ╰────
+  help: an env-var declaration is `(env)NAME "value"` or `(env)NAME #false`; remove the `{ ... }` block

@@ -90,11 +90,16 @@ fn run(cli: &Cli) -> Result<i32> {
     let resolved = resolve::resolve(&config, command_name, cli.profile.as_deref())?;
 
     if cli.dry_run {
-        let line = format::to_dry_run(&resolved.program, &resolved.args, &cli.passthrough)?;
+        let line = format::to_dry_run(
+            &resolved.program,
+            &resolved.args,
+            &cli.passthrough,
+            &resolved.env,
+        )?;
         println!("{line}");
         Ok(0)
     } else {
         let argv = format::to_argv(&resolved.args, &cli.passthrough);
-        exec::run(&resolved.program, &argv)
+        exec::run(&resolved.program, &argv, &resolved.env)
     }
 }

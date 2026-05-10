@@ -1130,3 +1130,248 @@ fn dry_run_value_with_embedded_nul_byte_exits_125() {
         .code(125)
         .stderr(predicate::str::contains("NUL byte"));
 }
+
+// --- §2.10 / §2.11 / §3.6 environment variables ---
+
+#[test]
+fn dry_run_renders_env_prefix_when_present() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        r#"llama-server "serve" {
+    host "0.0.0.0"
+    (env)OLLAMA_HOST "1.2.3.4"
+    (env)CUDA_VISIBLE_DEVICES "0,1"
+}
+"#,
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--dry-run")
+        .arg("serve")
+        .assert()
+        .code(0)
+        // shlex single-quotes the `0,1` value because the comma is
+        // a shell metacharacter; only the value is wrapped, leaving
+        // the K= prefix bare so the assignment shape is preserved.
+        .stdout(predicate::str::starts_with(
+            "env OLLAMA_HOST=1.2.3.4 CUDA_VISIBLE_DEVICES='0,1' llama-server",
+        ));
+}
+
+#[test]
+fn dry_run_emits_unsets_first() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        r#"foo {
+    (env)A "1"
+    sandbox {
+        (env)PATH #false
+        (env)B "2"
+    }
+}
+"#,
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--dry-run")
+        .arg("foo")
+        .arg("sandbox")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("env -u PATH A=1 B=2 foo"));
+}
+
+#[test]
+fn dry_run_no_env_unchanged() {
+    // Without env declarations, the dry-run line is byte-identical
+    // to a config without env support — no `env` prefix.
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "foo {\n    host \"x\"\n}\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--dry-run")
+        .arg("foo")
+        .assert()
+        .code(0)
+        .stdout("foo --host x\n");
+}
+
+#[test]
+fn list_includes_env_line_for_command_with_env_defaults() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        r#"foo {
+    (env)OLLAMA_HOST "1.2.3.4"
+    (env)OLD #false
+    host "0.0.0.0"
+}
+"#,
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--list")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("env: -u OLD OLLAMA_HOST=1.2.3.4"))
+        .stdout(predicate::str::contains("default-args: --host 0.0.0.0"));
+}
+
+#[test]
+fn list_omits_env_line_when_no_env_defaults() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "foo {\n    host \"x\"\n}\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--list")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("env:").not());
+}
+
+#[test]
+fn env_set_reaches_child_default_and_profile_paths() {
+    // Use `printenv` to confirm the resolved env reached the child.
+    // The variable name is a positional default on the jig command,
+    // so the resolved argv is `printenv JIG_TEST_FOO`. We then
+    // assert on the printed value.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        r#"printenv "show-foo" {
+    "JIG_TEST_FOO"
+    (env)JIG_TEST_FOO "default-value"
+    overridden {
+        (env)JIG_TEST_FOO "profile-value"
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    // Defaults: FOO is set by jig.
+    jig()
+        .current_dir(dir.path())
+        .arg("show-foo")
+        .assert()
+        .code(0)
+        .stdout("default-value\n");
+
+    // Profile overrides the default.
+    jig()
+        .current_dir(dir.path())
+        .arg("show-foo")
+        .arg("overridden")
+        .assert()
+        .code(0)
+        .stdout("profile-value\n");
+}
+
+#[test]
+fn env_unset_removes_inherited_var_from_child() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        r#"printenv "show-bar" {
+    "JIG_TEST_BAR"
+    sandbox {
+        (env)JIG_TEST_BAR #false
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    // Without the profile: BAR is whatever the parent set.
+    jig()
+        .current_dir(dir.path())
+        .env("JIG_TEST_BAR", "from-parent")
+        .arg("show-bar")
+        .assert()
+        .code(0)
+        .stdout("from-parent\n");
+
+    // With the unset profile: printenv exits non-zero because the
+    // requested variable does not exist in the child's environment.
+    jig()
+        .current_dir(dir.path())
+        .env("JIG_TEST_BAR", "from-parent")
+        .arg("show-bar")
+        .arg("sandbox")
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty());
+}
+
+#[test]
+fn dry_run_preserves_numeric_env_value_source_repr() {
+    // Integers/floats round-trip as their KDL source text and need
+    // no shell quoting. Pin the unquoted form so a future format
+    // change doesn't silently re-quote them.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        r#"foo {
+    (env)PORT 8090
+    (env)RATIO 0.5
+}
+"#,
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--dry-run")
+        .arg("foo")
+        .assert()
+        .code(0)
+        .stdout("env PORT=8090 RATIO=0.5 foo\n");
+}
+
+#[test]
+fn env_unknown_annotation_exits_125() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "foo {\n  (cwd)dir \"/x\"\n}\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--list")
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains("unknown type annotation"));
+}
+
+#[test]
+fn env_invalid_name_exits_125() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "foo {\n  (env)\"FOO-BAR\" \"x\"\n}\n",
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--list")
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains("env-var name"));
+}
+
+#[test]
+fn env_duplicate_in_defaults_exits_125() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "foo {\n  (env)X \"1\"\n  (env)X \"2\"\n}\n",
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--list")
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains("declared more than once"));
+}
