@@ -411,8 +411,54 @@ gcc {
 - Within a command, profile names must be unique. Duplicates are a parse error.
 - Repeated flag keys within a single scope are **allowed**. The merge algorithm in §2.8 picks single-mode vs repeat-mode resolution per key based on the multiplicity of unmarked occurrences across the default and selected-profile sides; the `+` marker (§2.5 rule 0) opts an occurrence out of v1's first-occurrence collapse. (Positionals have no key and may repeat freely.)
 - Command names, aliases, and profile names must not start with `-` (would be ambiguous with `jig`'s own flags) or `+` (reserved for the explicit append marker on flag keys, §2.5).
+- Environment-variable names (the identifier on a `(env)`-annotated node, §2.10) must match the POSIX-portable pattern `[A-Za-z_][A-Za-z0-9_]*`. Within a single scope (the defaults of one command, or the body of one profile) each env-var name must be unique; cross-scope occurrences (defaults plus a profile) are how overrides are expressed and remain allowed.
+- Type annotations on KDL nodes are recognized only where they are explicitly defined. The only annotation defined in v1 is `(env)` (§2.10), which applies to argument-shaped nodes (no children, exactly one value or `#false`) inside a command body or a profile body. Any other annotation, or `(env)` outside the contexts above, is a parse error.
 
 A profile (a node with children) and a default argument (a node without children) may share the same identifier within a command. They are structurally distinct in the KDL source and play different roles at resolution time, so no collision exists.
+
+### 2.10 Environment variables
+
+A KDL node bearing the `(env)` type annotation declares an environment-variable contribution rather than a CLI argument:
+
+```kdl
+llama-server "serve" {
+    host "0.0.0.0"
+    (env)OLLAMA_HOST "0.0.0.0"
+    (env)CUDA_VISIBLE_DEVICES "0,1"
+
+    qwen-coder {
+        m "/models/qwen-coder.gguf"
+        (env)CUDA_VISIBLE_DEVICES "0"     // override
+        (env)OLLAMA_HOST #false           // unset (env_remove)
+        (env)EXTRA_VAR "yes"              // new
+    }
+}
+```
+
+Rules:
+
+- Env declarations may appear in a command's defaults block or in a profile body, sibling to flag, positional, and profile nodes. They must not appear at top level (where a node is a command), and must not appear on a node with a child block (env vars do not have profile-like bodies).
+- The annotated node must carry **exactly one value**. The value may be a string, integer, or float (emitted via the same source-representation preservation as flag values, §2.4 / §7.2), or the literal boolean `#false` to mean "unset this variable on the child" (calls into `env_remove(NAME)`). The literal `#true` is not allowed (env vars require a value); a no-value form is not allowed; `#null` is not allowed.
+- The `+` explicit-append marker (§2.5 rule 0) is **not** allowed on `(env)` nodes.
+- The env-var name must match `[A-Za-z_][A-Za-z0-9_]*` (§2.9).
+
+Env-var contributions are not arguments and never appear on the resolved argv. They are applied to the spawned child via the merge in §2.11 and the exec rules in §3.6.
+
+### 2.11 Env-var merge semantics
+
+When `jig <command> [profile]` is invoked, env-var contributions are resolved on a parallel channel from flags/positionals:
+
+1. **Walk** the matched command's defaults in source order, then (if a profile was selected) the selected profile's body in source order. Each `(env)` node contributes one candidate `(NAME, value-or-Unset, side)`, where `side ∈ {default, profile}`.
+2. **Per-name resolution.** For each distinct `NAME` in the candidate list, decide one outcome:
+   - If any profile-side candidate for `NAME` is `Unset` (i.e. `#false`): the resolved outcome is **unset**.
+   - Else if any profile-side candidate for `NAME` is `Set(value)`: the resolved outcome is **set to that value**.
+   - Else if any default-side candidate for `NAME` is `Unset`: the resolved outcome is **unset**.
+   - Else (only default-side `Set`): the resolved outcome is **set to that value**.
+3. **Output position.** Each resolved outcome is emitted at the **first occurrence** of `NAME` in the walk. This is what determines the order env vars appear in `--list` (§7.1) and `--dry-run` (§7.2 / §3.4).
+
+There is no repeat mode and no `+` marker for env vars: each name has a single resolved outcome (set to one value, or unset), because POSIX assigns one value per env-var name. Per-scope uniqueness (§2.9) prevents the multiplicity that motivates those mechanisms for flags.
+
+The child process inherits `jig`'s own environment by default; the resolved outcomes are applied on top of that inherited environment (§3.6).
 
 ## 3. Command-Line Interface
 
@@ -489,6 +535,7 @@ Rationale: target commands very commonly use exit codes `1` (generic failure) an
 - `jig` resolves the target command via `$PATH` (or treats it as a path if it contains a path separator), spawns it as a child process, and waits for it to exit.
 - `jig` exits with the child's exit status, except where overridden by the wrapper-tool exit codes in §3.5.
 - Standard streams (stdin, stdout, stderr) are inherited from `jig` to the child.
+- The child process inherits `jig`'s own environment, then any env-var outcomes from §2.11 are applied on top: a resolved "set" calls `env(NAME, value)` on the child's `Command`, and a resolved "unset" calls `env_remove(NAME)`. `jig` never wholesale-clears the inherited environment.
 - Signals (SIGINT, SIGTERM) delivered to `jig` reach the child naturally because the child is in the same process group; no explicit signal forwarding is performed by `jig` for v1.
 
 Implementation note: `std::process::Command::status()` is the appropriate Rust API. `execvp`-style replacement (`exec`) was considered but rejected because it would prevent `jig` from translating non-zero child statuses through the §3.5 exit-code conventions and would lose the ability to perform any post-execution work in the future.
@@ -720,6 +767,36 @@ verbose-tool {
 | `jig gcc custom`                 | `gcc -I /mine` |
 | `jig verbose-tool`               | `verbose-tool -v -v -v` |
 
+### 5.7 Environment variables
+
+`(env)NAME` declarations contribute to the spawned child's environment rather than its argv. Defaults apply unconditionally; profiles override or unset them per §2.11.
+
+```kdl
+llama-server "serve" {
+    host "0.0.0.0"
+    (env)OLLAMA_HOST "0.0.0.0"
+    (env)CUDA_VISIBLE_DEVICES "0,1"
+
+    qwen-coder {
+        m "/models/qwen-coder.gguf"
+        (env)CUDA_VISIBLE_DEVICES "0"
+    }
+
+    sandbox {
+        m "/models/sandbox.gguf"
+        (env)OLLAMA_HOST #false
+    }
+}
+```
+
+| Command                              | Resolved (`--dry-run`) |
+|--------------------------------------|------------------------|
+| `jig serve`                          | `env OLLAMA_HOST=0.0.0.0 CUDA_VISIBLE_DEVICES='0,1' llama-server --host 0.0.0.0` |
+| `jig serve qwen-coder`               | `env OLLAMA_HOST=0.0.0.0 CUDA_VISIBLE_DEVICES=0 llama-server --host 0.0.0.0 -m /models/qwen-coder.gguf` |
+| `jig serve sandbox`                  | `env -u OLLAMA_HOST CUDA_VISIBLE_DEVICES='0,1' llama-server --host 0.0.0.0 -m /models/sandbox.gguf` |
+
+The `env(1)` prefix is the dry-run rendering only; actual execution applies the same outcomes via `Command::env` / `Command::env_remove` directly on the child (§3.6).
+
 ## 6. Out of Scope for v1
 
 The following are deliberately deferred. None of them are precluded by the v1 design.
@@ -734,7 +811,6 @@ The following are deliberately deferred. None of them are precluded by the v1 de
 - Subcommand chains beyond what fits in a quoted command name.
 - `--print` variants (e.g. argv-array form vs shell-quoted form).
 - Validation of resolved commands beyond `Command::spawn` failures (e.g. proactive existence/executability checks before launching).
-- Environment variable definitions in config (delegated to a future version).
 - Working-directory annotations.
 
 ## 7. Resolved Design Decisions
@@ -749,6 +825,7 @@ The output should be readable enough to grep and eyeball, but is not promised to
 
 ```
 llama-server (alias: serve)
+  env: -u OLD_VAR OLLAMA_HOST=0.0.0.0
   default-args: --host 0.0.0.0 --port 8090 -c 32768 --flash-attn
   profiles:
     qwen-coder
@@ -760,6 +837,8 @@ rsync (alias: sync)
     backup
 ```
 
+The `env:` line is emitted only when the command has env-var defaults (§2.10). It mirrors the `env(1)` form used by `--dry-run`: `-u NAME` for unsets followed by `NAME=value` for sets. Profile-level env contributions are not shown — like profile-level flag contributions, they are visible only via `--dry-run`.
+
 ### 7.2 `--dry-run` output format
 
 Output the resolved command as a **single line, properly shell-quoted**, such that the line can be copy-pasted into a POSIX shell and executed with the exact same effect as omitting `--dry-run` would have produced.
@@ -769,10 +848,24 @@ This means:
 - Arguments containing no shell-significant characters may be emitted unquoted for readability.
 - The output goes to stdout. No trailing prompt, no leading `$`, no log decoration.
 
-Example:
+When env-var contributions (§2.10 / §2.11) are present, the line begins with an `env(1)` invocation that applies them, followed by the resolved command. The form is:
+
+```
+env [-u UNSET]... [NAME=value]... <program> <args>...
+```
+
+Unsets come first (one `-u NAME` per name); sets follow as `NAME=value` pairs; both names and values are shell-quoted via the same rules as above. With no env contributions, the prefix is omitted entirely and the output is byte-identical to a non-env config.
+
+Example without env vars:
 ```
 $ jig --dry-run serve qwen-coder
 llama-server --host 0.0.0.0 --port 8090 -c 32768 --flash-attn -m /models/qwen-coder.gguf -ngl 999 -ts 0.5,0.5
+```
+
+Example with env vars (set + unset):
+```
+$ jig --dry-run serve qwen-coder
+env -u OLD_VAR OLLAMA_HOST=0.0.0.0 CUDA_VISIBLE_DEVICES=0 llama-server --host 0.0.0.0 -m /models/qwen-coder.gguf
 ```
 
 Argv-style (one argument per line) is **not** offered in v1. If users need to inspect quoting, they can pipe the dry-run output to a shell parser, or we can revisit later.
