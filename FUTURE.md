@@ -7,53 +7,6 @@ without polluting the v1 spec.
 Each entry below is a sketch, not a commitment. Some may be implemented
 in v2; others may be discarded after more thought.
 
-## Environment variables
-
-Allow commands and profiles to set environment variables for the
-launched process, in addition to or instead of CLI flags. Many tools
-read configuration primarily from env (Docker, AWS CLI, the
-`OLLAMA_*` family, etc.), and forcing users to wrap `jig` in a shell
-script to set env vars defeats much of its purpose.
-
-### Sketched syntax (leaning candidate)
-
-KDL native type annotations:
-
-```kdl
-llama-server "serve" {
-    host "0.0.0.0"
-    (env)OLLAMA_HOST "0.0.0.0"
-    (env)CUDA_VISIBLE_DEVICES "0,1"
-
-    qwen-coder {
-        m "/models/qwen-coder.gguf"
-        (env)CUDA_VISIBLE_DEVICES "0"
-    }
-}
-```
-
-Pros:
-
-- No reserved keyword (no `env { ... }` block name to collide with
-  hypothetical `--env` flags).
-- Uses a native KDL feature.
-- Mixes naturally with flag definitions.
-- Same merge/suppression rules apply: profile env vars override defaults;
-  `(env)FOO #false` suppresses an inherited env var.
-
-Cons:
-
-- Type annotations are slightly cryptic on first read; users must learn
-  the convention.
-
-### Alternatives considered
-
-- A reserved `env { ... }` block. Cleaner visual grouping but introduces
-  a reserved keyword.
-- A separate top-level `env` block parallel to a `flags` block. Forces
-  explicit grouping but breaks the "command body = flags by default"
-  mental model.
-
 ## Parent-directory configuration traversal
 
 Search upward from the current working directory for `jig.kdl` /
