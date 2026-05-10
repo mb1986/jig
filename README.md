@@ -55,6 +55,46 @@ llama3` overrides `--port` and `-m` per the `llama3` profile.
 `--dry-run` output is shell-quoted so you can copy-paste it into a
 terminal and get the same effect.
 
+## Environment variables
+
+Tools that take configuration from the environment (Docker, the
+`OLLAMA_*` family, CUDA, ...) can be set up alongside flags. A KDL
+node bearing the `(env)` type annotation declares an env var rather
+than a CLI argument; profiles override defaults the same way they
+override flags, and `(env)NAME #false` unsets a variable on the
+child:
+
+```kdl
+llama-server "serve" {
+    host "0.0.0.0"
+    (env)OLLAMA_HOST "0.0.0.0"
+    (env)CUDA_VISIBLE_DEVICES "0,1"
+
+    qwen-coder {
+        m "/models/qwen-coder.gguf"
+        (env)CUDA_VISIBLE_DEVICES "0"
+    }
+
+    sandbox {
+        m "/models/sandbox.gguf"
+        (env)OLLAMA_HOST #false
+    }
+}
+```
+
+```text
+$ jig --dry-run serve qwen-coder
+env OLLAMA_HOST=0.0.0.0 CUDA_VISIBLE_DEVICES=0 llama-server --host 0.0.0.0 -m /models/qwen-coder.gguf
+
+$ jig --dry-run serve sandbox
+env -u OLLAMA_HOST CUDA_VISIBLE_DEVICES='0,1' llama-server --host 0.0.0.0 -m /models/sandbox.gguf
+```
+
+The `env(1)` prefix is the dry-run rendering only; actual execution
+applies the same outcomes directly to the child via
+`Command::env` / `Command::env_remove`. The child inherits `jig`'s
+environment by default; declared sets and unsets layer on top.
+
 ## Listing
 
 ```text
