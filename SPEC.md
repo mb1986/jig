@@ -475,11 +475,19 @@ jig [JIG_FLAGS]... <command-or-alias> [profile] [PASSTHROUGH]...
 
 The first non-flag argument is treated as the command/alias. Everything from there onward (including args that look like flags) is consumed positionally or as pass-through.
 
+The token immediately after `<command-or-alias>` occupies the **profile slot**. It is interpreted as follows:
+
+- A literal `--` is **consumed** as a "no profile selected" marker; everything from the next token onward is pass-through.
+- A token that does not start with `-` is the profile name (per §2.9 profile names cannot start with `-`).
+- Anything else (a hyphen-prefixed token other than `--`) leaves the profile slot empty and is the first pass-through token.
+
+This consumption rule applies only to the profile slot. A `--` that appears later — after a real profile, or after a previously-consumed `--` — sits in the pass-through region and is preserved verbatim per §3.2.
+
 ### 3.2 Pass-through
 
 All arguments after the profile (or after the command, if no profile) are appended to the resolved command line, unmodified, in order.
 
-A literal `--` token, if present in the pass-through region, is **passed through verbatim** (not stripped). This allows the target command to use `--` as its own separator if it needs to.
+A literal `--` token, if present in the pass-through region, is **passed through verbatim** (not stripped). This allows the target command to use `--` as its own separator if it needs to. The profile-slot rule (§3.1) is the one exception: a `--` written *immediately* after `<command-or-alias>` is consumed there as the "no profile" marker and never reaches the pass-through region. To pass a literal `--` as the first pass-through token when no profile is selected, write `--` twice: the first is consumed by the profile slot, the second is preserved.
 
 ```
 jig serve qwen-coder -x --abc -y
@@ -487,6 +495,12 @@ jig serve qwen-coder -x --abc -y
 
 jig serve qwen-coder -- --abc
   → llama-server <resolved-args> -- --abc
+
+jig serve -- foo
+  → llama-server <defaults-only-args> foo
+
+jig serve -- -- foo
+  → llama-server <defaults-only-args> -- foo
 ```
 
 ### 3.3 Pass-through placement
