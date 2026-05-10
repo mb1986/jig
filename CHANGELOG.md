@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- A literal `--` immediately after the command-or-alias is now consumed
+  as the "no profile selected" marker, and everything from the next
+  token onward is pass-through (SPEC §3.1). This unblocks the
+  previously-impossible `jig <cmd> <bare-positional>` case: a positional
+  that is not a profile name (and not hyphen-prefixed) used to be
+  misread as a profile, producing an "unknown profile" error. Write
+  `jig <cmd> -- <positional>` instead and the bare token reaches the
+  child. A `--` written *after* a real profile, or after a previously-
+  consumed `--`, still sits in the pass-through region and is preserved
+  verbatim per §3.2. To pass a literal `--` as the first pass-through
+  token when no profile is selected, write `--` twice: the first is the
+  no-profile marker (consumed), the second is preserved.
+
 ## [0.4.0] — 2026-05-10
 
 ### Added
