@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Environment-variable contributions on commands and profiles (SPEC
+  §2.10 / §2.11). A KDL node bearing the `(env)` type annotation
+  declares an env var rather than a CLI argument: `(env)NAME "value"`
+  sets the variable on the spawned child via `Command::env`, and
+  `(env)NAME #false` removes it via `Command::env_remove`. Profile
+  declarations override defaults under the same precedence as flags;
+  duplicates within one scope are a parse error and unknown
+  annotations (`(cwd)`, `(file)`, …) are rejected so the design
+  space stays open for future use.
+- `--dry-run` prefixes the resolved command with an `env(1)`
+  invocation when env contributions are present (`env -u UNSET
+  NAME=value … program …`), so the line remains copy-paste-correct
+  in any POSIX shell. Without env contributions the output is
+  byte-identical to before.
+- `--list` emits an `env:` line for commands that declare env
+  defaults, mirroring the `env(1)`-style form used by `--dry-run`.
+
 ## [0.3.1] — 2026-05-10
 
 ### Fixed
