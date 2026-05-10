@@ -444,9 +444,51 @@ fn passthrough_args_appear_at_end() {
         .arg("y")
         .assert()
         .code(0)
-        // §3.2: `--` is preserved verbatim in pass-through.
-        .stdout(predicate::str::contains("foo --host x"))
-        .stdout(predicate::str::contains("--extra y"));
+        // §3.1: `--` in the profile slot is consumed as the
+        // "no profile" marker; the remaining tokens are
+        // appended at the end of the resolved command line.
+        .stdout("foo --host x --extra y\n");
+}
+
+#[test]
+fn double_dash_in_profile_slot_skips_profile_lookup() {
+    // §3.1: a bare positional pass-through that happens not to be a
+    // profile name would otherwise error as "unknown profile". The
+    // no-profile marker (`--` in the profile slot) lets the user
+    // skip the slot so the token reaches the child.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "foo {\n    host \"x\"\n    fast {}\n}\n",
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--dry-run")
+        .arg("foo")
+        .arg("--")
+        .arg("not-a-profile")
+        .assert()
+        .code(0)
+        .stdout("foo --host x not-a-profile\n");
+}
+
+#[test]
+fn second_double_dash_after_no_profile_marker_is_preserved() {
+    // §3.2: only the first `--` (in the profile slot) is consumed.
+    // A subsequent `--` is in the pass-through region and survives.
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "foo {\n    host \"x\"\n}\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--dry-run")
+        .arg("foo")
+        .arg("--")
+        .arg("--")
+        .arg("bar")
+        .assert()
+        .code(0)
+        .stdout("foo --host x -- bar\n");
 }
 
 #[test]
@@ -568,14 +610,15 @@ fn exec_passes_through_passthrough_args() {
     jig()
         .current_dir(dir.path())
         .arg("printf")
-        // `--` so `a` is treated as pass-through rather than profile.
+        // §3.1: `--` here is the no-profile marker (consumed),
+        // so `a b c` reach the child as bare positionals.
         .arg("--")
         .arg("a")
         .arg("b")
         .arg("c")
         .assert()
         .code(0)
-        .stdout(predicate::str::contains("a\nb\nc\n"));
+        .stdout("a\nb\nc\n");
 }
 
 // --- §7.1 list rendering, §3.4 --completions (Step 7) ---

@@ -101,9 +101,12 @@ pub struct Cli {
 ///
 /// Walks argv looking for jig's known flags; everything from the
 /// first non-flag argument onward is positional / pass-through.
-/// `--` is preserved when it appears in the positional region;
-/// it is consumed only when used as a separator before the
-/// command (e.g. `jig --config x.kdl -- cmd`).
+/// A literal `--` is consumed in two specific positions: as the
+/// flags-vs-positional boundary before the command name (e.g.
+/// `jig --config x.kdl -- cmd`), and in the profile slot (the
+/// token immediately after `<command-or-alias>`) where it marks
+/// "no profile selected". A `--` anywhere else in the positional
+/// region is preserved verbatim.
 #[must_use]
 pub fn parse_argv() -> Cli {
     let argv: Vec<OsString> = std::env::args_os().collect();
@@ -164,15 +167,19 @@ fn fill_positional(cli: &mut Cli, rest: &[OsString]) {
 
     cli.command = iter.next().map(|s| s.to_string_lossy().into_owned());
 
-    // Profile is the next token unless it starts with `-` (per
-    // `SPEC.md` §2.9 profile names cannot start with `-`, so a
-    // hyphen-prefixed token at this position must be pass-through).
+    // Profile-slot interpretation per `SPEC.md` §3.1:
+    //   - `--`     → consumed as the "no profile selected" marker.
+    //   - bare     → the profile name (§2.9 forbids leading `-`).
+    //   - `-…`     → no profile; first pass-through token (held).
     let mut held: Option<&OsString> = iter.next();
-    if let Some(token) = held
-        && !token.to_string_lossy().starts_with('-')
-    {
-        cli.profile = Some(token.to_string_lossy().into_owned());
-        held = iter.next();
+    if let Some(token) = held {
+        let s = token.to_string_lossy();
+        if s == "--" {
+            held = None;
+        } else if !s.starts_with('-') {
+            cli.profile = Some(s.into_owned());
+            held = iter.next();
+        }
     }
 
     let mut passthrough: Vec<OsString> = Vec::new();
@@ -251,12 +258,45 @@ mod tests {
     }
 
     #[test]
-    fn double_dash_after_command_with_no_profile_is_preserved() {
+    fn double_dash_in_profile_slot_is_consumed() {
+        // §3.1: `--` immediately after the command is the
+        // "no profile" marker and is consumed.
         let mut cli = Cli::default();
         fill_positional(&mut cli, &rest(&["foo", "--", "--abc"]));
         assert_eq!(cli.command.as_deref(), Some("foo"));
         assert_eq!(cli.profile, None);
-        assert_eq!(cli.passthrough, rest(&["--", "--abc"]));
+        assert_eq!(cli.passthrough, rest(&["--abc"]));
+    }
+
+    #[test]
+    fn double_dash_in_profile_slot_unblocks_bare_positional() {
+        // The motivating case: a bare positional pass-through that
+        // would otherwise be misread as a profile name.
+        let mut cli = Cli::default();
+        fill_positional(&mut cli, &rest(&["foo", "--", "bar"]));
+        assert_eq!(cli.command.as_deref(), Some("foo"));
+        assert_eq!(cli.profile, None);
+        assert_eq!(cli.passthrough, rest(&["bar"]));
+    }
+
+    #[test]
+    fn second_double_dash_after_profile_slot_marker_is_preserved() {
+        // First `--` is consumed (no-profile marker); a second `--`
+        // sits in the pass-through region and is preserved per §3.2.
+        let mut cli = Cli::default();
+        fill_positional(&mut cli, &rest(&["foo", "--", "--", "bar"]));
+        assert_eq!(cli.command.as_deref(), Some("foo"));
+        assert_eq!(cli.profile, None);
+        assert_eq!(cli.passthrough, rest(&["--", "bar"]));
+    }
+
+    #[test]
+    fn lone_double_dash_in_profile_slot_yields_empty_passthrough() {
+        let mut cli = Cli::default();
+        fill_positional(&mut cli, &rest(&["foo", "--"]));
+        assert_eq!(cli.command.as_deref(), Some("foo"));
+        assert_eq!(cli.profile, None);
+        assert!(cli.passthrough.is_empty());
     }
 
     #[test]
