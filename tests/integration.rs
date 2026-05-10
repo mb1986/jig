@@ -923,6 +923,193 @@ fn completions_each_shell_references_dynamic_flags() {
     }
 }
 
+// --- §3.4 completion-script behavior (regression tests) ---
+//
+// jig flags only apply before the first positional. After that,
+// every token — including hyphen-prefixed ones — is command,
+// profile, or pass-through context. The completion scripts must
+// honor this split, otherwise tabbing past the command name
+// re-offers jig's own flags as candidates.
+//
+// Shells are skipped if not on PATH. zsh ships with macOS;
+// bash ships with both runners; ubuntu-latest also has zsh
+// available.
+
+fn shell_present(shell: &str) -> bool {
+    std::process::Command::new(shell)
+        .arg("-c")
+        .arg(":")
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+const ZSH_DRIVER: &str = r#"
+typeset -ga TRACE
+_arguments() { TRACE+=("arguments") }
+_describe()  { shift 2; for c in "$@"; do TRACE+=("describe:$c"); done }
+_files()     { TRACE+=("files") }
+source "$1"
+shift
+typeset -ga words=("$@")
+typeset -gi CURRENT=${#words[@]}
+TRACE=()
+_jig 2>/dev/null
+print -r -- "${(j:|:)TRACE}"
+"#;
+
+fn zsh_trace(words: &[&str]) -> String {
+    let script = std::env::current_dir()
+        .unwrap()
+        .join("src/completions/jig.zsh");
+    let mut cmd = std::process::Command::new("zsh");
+    cmd.arg("-fc").arg(ZSH_DRIVER).arg("driver").arg(&script);
+    for w in words {
+        cmd.arg(w);
+    }
+    let out = cmd.output().unwrap();
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+#[test]
+fn zsh_completion_pass_through_hyphen_after_positional_takes_files_branch() {
+    if !shell_present("zsh") {
+        eprintln!("skipping: zsh not on PATH");
+        return;
+    }
+    // `jig serve -<TAB>` — `serve` is positional, `-` would be
+    // pass-through. Must short-circuit to _files; must NOT call
+    // _arguments (which would re-offer jig's own flags).
+    let trace = zsh_trace(&["jig", "serve", "-"]);
+    assert_eq!(trace, "files", "expected `files` only; got `{trace}`");
+}
+
+#[test]
+fn zsh_completion_pass_through_hyphen_after_two_positionals_takes_files_branch() {
+    if !shell_present("zsh") {
+        eprintln!("skipping: zsh not on PATH");
+        return;
+    }
+    let trace = zsh_trace(&["jig", "serve", "qwen-coder", "--"]);
+    assert_eq!(trace, "files", "expected `files` only; got `{trace}`");
+}
+
+#[test]
+fn zsh_completion_initial_hyphen_offers_jig_flags() {
+    if !shell_present("zsh") {
+        eprintln!("skipping: zsh not on PATH");
+        return;
+    }
+    // `jig -<TAB>` — no positional yet, must call _arguments
+    // (which has the jig flag specs).
+    let trace = zsh_trace(&["jig", "-"]);
+    assert!(
+        trace.contains("arguments"),
+        "expected `arguments`; got `{trace}`"
+    );
+    assert!(
+        !trace.contains("files"),
+        "must not short-circuit to _files at flag position; got `{trace}`"
+    );
+}
+
+#[test]
+fn zsh_completion_initial_empty_dispatches_to_arguments() {
+    if !shell_present("zsh") {
+        eprintln!("skipping: zsh not on PATH");
+        return;
+    }
+    let trace = zsh_trace(&["jig", ""]);
+    assert!(
+        trace.contains("arguments"),
+        "expected `arguments`; got `{trace}`"
+    );
+}
+
+const BASH_DRIVER: &str = r#"
+source "$1"
+shift
+COMP_WORDS=("$@")
+COMP_CWORD=$(( ${#COMP_WORDS[@]} - 1 ))
+COMPREPLY=()
+_jig 2>/dev/null
+printf "%s\n" "${COMPREPLY[@]}"
+"#;
+
+fn bash_reply(words: &[&str]) -> Vec<String> {
+    let script = std::env::current_dir()
+        .unwrap()
+        .join("src/completions/jig.bash");
+    let mut cmd = std::process::Command::new("bash");
+    cmd.arg("-c").arg(BASH_DRIVER).arg("driver").arg(&script);
+    for w in words {
+        cmd.arg(w);
+    }
+    let out = cmd.output().unwrap();
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+const JIG_FLAGS: &[&str] = &[
+    "-h",
+    "--help",
+    "-V",
+    "--version",
+    "-l",
+    "--list",
+    "-n",
+    "--dry-run",
+    "--config",
+];
+
+#[test]
+fn bash_completion_does_not_offer_jig_flags_after_positional() {
+    if !shell_present("bash") {
+        eprintln!("skipping: bash not on PATH");
+        return;
+    }
+    let reply = bash_reply(&["jig", "serve", "-"]);
+    for flag in JIG_FLAGS {
+        assert!(
+            !reply.iter().any(|x| x == flag),
+            "must not offer jig flag `{flag}` after positional; got {reply:?}"
+        );
+    }
+}
+
+#[test]
+fn bash_completion_does_not_offer_jig_flags_after_two_positionals() {
+    if !shell_present("bash") {
+        eprintln!("skipping: bash not on PATH");
+        return;
+    }
+    let reply = bash_reply(&["jig", "serve", "qwen-coder", "--"]);
+    for flag in JIG_FLAGS {
+        assert!(
+            !reply.iter().any(|x| x == flag),
+            "must not offer jig flag `{flag}` after positional; got {reply:?}"
+        );
+    }
+}
+
+#[test]
+fn bash_completion_initial_hyphen_offers_jig_flags() {
+    if !shell_present("bash") {
+        eprintln!("skipping: bash not on PATH");
+        return;
+    }
+    let reply = bash_reply(&["jig", "-"]);
+    for flag in ["--help", "--config", "--list", "--dry-run", "--version"] {
+        assert!(
+            reply.iter().any(|x| x == flag),
+            "expected jig flag `{flag}`; got {reply:?}"
+        );
+    }
+}
+
 #[test]
 fn dry_run_value_with_embedded_nul_byte_exits_125() {
     // A NUL byte cannot be shell-quoted, so --dry-run should refuse
