@@ -134,6 +134,7 @@ fn parse_command_body(
                     children.push(CommandChild::Profile {
                         name,
                         name_span,
+                        extends: None,
                         args,
                         env: profile_env,
                     });

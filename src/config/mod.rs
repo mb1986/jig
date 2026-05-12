@@ -58,6 +58,13 @@ pub enum CommandChild {
         name: String,
         /// Source span of `name`.
         name_span: SourceSpan,
+        /// Optional parent profile name from `extends="<parent>"` on
+        /// the profile node. When set, the parent's body is activated
+        /// alongside this profile's at resolution time (`SPEC.md`
+        /// §2.8.5). The span points at the parent-name value entry so
+        /// validation can render two-span diagnostics. Cycle and
+        /// unknown-parent checks live in the validator.
+        extends: Option<(String, SourceSpan)>,
         /// Profile body's argument-shaped contributions
         /// (flags / positionals), in source order.
         args: Vec<Argument>,
