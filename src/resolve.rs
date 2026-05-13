@@ -94,17 +94,17 @@ pub fn resolve(config: &Config, name: &str, profile: Option<&str>) -> Result<Res
         Some(p) => Some(lookup_profile(cmd, p)?),
     };
 
-    // Step 1: build the inheritance chain for the selected leaf.
-    // `chain[i]` is the i-th ancestor (0 = root, last = leaf). Tier
-    // assignment is `i + 1`, so defaults stay at tier 0 and the leaf
-    // sits at the highest tier. With no profile selected the chain
-    // is empty and only defaults activate.
+    // Step 3 (module doc): build the inheritance chain for the
+    // selected leaf. `chain[i]` is the i-th ancestor (0 = root,
+    // last = leaf). Tier assignment is `i + 1`, so defaults stay at
+    // tier 0 and the leaf sits at the highest tier. With no profile
+    // selected the chain is empty and only defaults activate.
     let chain: Vec<&str> =
         selected_profile.map_or_else(Vec::new, |leaf| inheritance_chain(cmd, leaf));
     let tier_of: HashMap<&str, usize> =
         chain.iter().enumerate().map(|(i, &n)| (n, i + 1)).collect();
 
-    // Step 2: walk children, tagging each candidate with its origin
+    // Step 4: walk children, tagging each candidate with its origin
     // tier. Defaults are tier 0; profiles in the chain emit their
     // body candidates at the matching tier. Other profiles are
     // skipped (§2.7).
@@ -122,9 +122,9 @@ pub fn resolve(config: &Config, name: &str, profile: Option<&str>) -> Result<Res
         }
     }
 
-    // Resolve env-var contributions on a parallel channel. Tier
-    // ordering mirrors the argv side: defaults at tier 0, then each
-    // ancestor's env in chain order, then the leaf's env.
+    // Step 6: resolve env-var contributions on a parallel channel.
+    // Tier ordering mirrors the argv side: defaults at tier 0, then
+    // each ancestor's env in chain order, then the leaf's env.
     let mut per_tier_env: Vec<&[EnvEntry]> = vec![cmd.env.as_slice()];
     for &profile_name in &chain {
         let env_slice = cmd
@@ -141,7 +141,7 @@ pub fn resolve(config: &Config, name: &str, profile: Option<&str>) -> Result<Res
     }
     let env = resolve_env(&per_tier_env);
 
-    // Step 3: group flag candidates by resolved CLI form, then
+    // Step 5: group flag candidates by resolved CLI form, then
     // compute the emission plan per key. The plan records, for each
     // emitting source index, the value to use at that position;
     // indices not present are suppressed (whether by collapse or by
@@ -157,9 +157,9 @@ pub fn resolve(config: &Config, name: &str, profile: Option<&str>) -> Result<Res
         plan_key(&candidates, indices, &mut emit_value);
     }
 
-    // Step 4: assemble. Positionals always emit; flags emit iff they
-    // appear in the plan, taking the planned value (which is what
-    // makes profile override work in single mode).
+    // Assemble: positionals always emit; flags emit iff they appear
+    // in the plan, taking the planned value (which is what makes
+    // profile override work in single mode).
     let mut out: Vec<Argument> = Vec::with_capacity(candidates.len());
     for (i, (arg, _)) in candidates.into_iter().enumerate() {
         match arg {
@@ -357,9 +357,14 @@ fn plan_key(
 /// `SPEC.md` §2.8.5, validation has already proven the graph is
 /// acyclic and that every `extends` target resolves to a sibling
 /// profile, so the walk terminates and never produces a stray
-/// reference.
+/// reference. We still bound the walk by the number of profiles
+/// in the command and panic on a revisit, so a caller that
+/// bypasses validation gets a loud failure instead of an infinite
+/// loop.
 fn inheritance_chain<'a>(cmd: &'a Command, leaf: &'a str) -> Vec<&'a str> {
+    use std::collections::HashSet;
     let mut chain: Vec<&'a str> = vec![leaf];
+    let mut visited: HashSet<&'a str> = HashSet::from([leaf]);
     let mut current: &'a str = leaf;
     loop {
         let parent = cmd.children.iter().find_map(|c| match c {
@@ -370,6 +375,10 @@ fn inheritance_chain<'a>(cmd: &'a Command, leaf: &'a str) -> Vec<&'a str> {
         });
         match parent {
             Some(p) => {
+                assert!(
+                    visited.insert(p),
+                    "invariant: validation rejects inheritance cycles before resolve runs"
+                );
                 chain.push(p);
                 current = p;
             }
