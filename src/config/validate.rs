@@ -337,14 +337,22 @@ fn walk_inheritance<'a>(
             break;
         };
         if !profile_extends.contains_key(parent) {
-            let suggestion = nearest(parent, sibling_names);
+            // A profile cannot extend itself (that would be a
+            // self-cycle), so drop `current` from the suggestion
+            // haystack and the available-list rendered in the help.
+            let candidates: Vec<&str> = sibling_names
+                .iter()
+                .copied()
+                .filter(|n| *n != current)
+                .collect();
+            let suggestion = nearest(parent, &candidates);
             return Err(Error::ProfileExtendsUnknownParent {
                 profile: current.to_string(),
                 parent: parent.to_string(),
                 command: command.to_string(),
                 src: src.clone(),
                 span: parent_span,
-                help: build_help("profiles", sibling_names, suggestion),
+                help: build_help("profiles", &candidates, suggestion),
             });
         }
         current = parent;
@@ -901,11 +909,41 @@ mod tests {
 
     #[test]
     fn extends_unknown_parent_with_no_siblings_says_none() {
+        // The offending profile is filtered out of the suggestion
+        // haystack (a profile cannot extend itself), so with no
+        // other profiles in the command the available-list is empty
+        // and the help renders the "no profiles" form.
         let err = parse_and_validate(r#"foo { child extends="ghost" {} }"#).unwrap_err();
         let Error::ProfileExtendsUnknownParent { help, .. } = err else {
             panic!();
         };
-        assert!(help.contains("available profiles: child") || help.contains("no profiles"));
+        assert!(help.contains("no profiles"), "help was: {help}");
+        assert!(!help.contains("child"), "self should not appear: {help}");
+    }
+
+    #[test]
+    fn extends_unknown_parent_excludes_self_from_available_list() {
+        // Two profiles, one with a bad `extends`. The offending
+        // profile's own name must not appear in the available-list
+        // since extending self would just be a self-cycle.
+        let err = parse_and_validate(
+            r#"foo {
+                parent {}
+                child extends="bogus" {}
+            }"#,
+        )
+        .unwrap_err();
+        let Error::ProfileExtendsUnknownParent { help, .. } = err else {
+            panic!();
+        };
+        assert!(
+            help.contains("available profiles: parent"),
+            "help was: {help}",
+        );
+        assert!(
+            !help.contains("child"),
+            "self should not appear in available list: {help}",
+        );
     }
 
     #[test]
