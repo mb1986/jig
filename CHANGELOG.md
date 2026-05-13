@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Shell completion now expands a leading `~` in the value passed to
+  `--config` before forwarding it to `jig --list-commands` /
+  `--list-profiles`. Previously, `jig --config ~/cfg.kdl <TAB>`
+  silently returned no candidates because the completion script
+  fed the literal `~/cfg.kdl` token back to `jig`, which could not
+  open the file. Affects the zsh, bash, and fish scripts. The fix
+  handles `~` and `~/` only; `~user/` is intentionally not expanded
+  (uniform across all three shells — zsh's built-in `${~var}` would
+  cover `~user/` but writes "no such user" to stderr on unknown
+  accounts, which would be visible mid-tab).
+
 ## [0.7.0] — 2026-05-13
 
 ### Added
