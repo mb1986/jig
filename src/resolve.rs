@@ -107,7 +107,9 @@ pub fn resolve(config: &Config, name: &str, profile: Option<&str>) -> Result<Res
     // Step 4: walk children, tagging each candidate with its origin
     // tier. Defaults are tier 0; profiles in the chain emit their
     // body candidates at the matching tier. Other profiles are
-    // skipped (§2.7).
+    // skipped (§2.7). Profile-name uniqueness within a command (§2.9)
+    // means each chain profile matches at most one child; without
+    // that invariant, two children sharing a name would both push.
     let mut candidates: Vec<(Argument, usize /* tier */)> = Vec::new();
     for child in &cmd.children {
         match child {
@@ -357,10 +359,10 @@ fn plan_key(
 /// `SPEC.md` §2.8.5, validation has already proven the graph is
 /// acyclic and that every `extends` target resolves to a sibling
 /// profile, so the walk terminates and never produces a stray
-/// reference. We still bound the walk by the number of profiles
-/// in the command and panic on a revisit, so a caller that
-/// bypasses validation gets a loud failure instead of an infinite
-/// loop.
+/// reference. We track the visited set and panic on a revisit so a
+/// caller that bypasses validation gets a loud failure instead of an
+/// infinite loop; the linear scan inside the loop also panics if a
+/// parent name no longer resolves to a sibling profile.
 fn inheritance_chain<'a>(cmd: &'a Command, leaf: &'a str) -> Vec<&'a str> {
     use std::collections::HashSet;
     let mut chain: Vec<&'a str> = vec![leaf];
@@ -375,6 +377,13 @@ fn inheritance_chain<'a>(cmd: &'a Command, leaf: &'a str) -> Vec<&'a str> {
         });
         match parent {
             Some(p) => {
+                assert!(
+                    cmd.children.iter().any(|c| matches!(
+                        c,
+                        CommandChild::Profile { name, .. } if name == p
+                    )),
+                    "invariant: validation rejects unknown `extends` parents before resolve runs"
+                );
                 assert!(
                     visited.insert(p),
                     "invariant: validation rejects inheritance cycles before resolve runs"
@@ -1913,18 +1922,34 @@ mod tests {
     }
 
     #[test]
-    fn inheritance_false_at_both_defaults_and_leaf_drops_both_falses() {
-        // Both tier 0 (defaults) and tier 2 (leaf) carry `#false`
-        // for the same key. The leaf's `#false` sets max_false_tier
-        // to 2, dropping tier-<2 entries (including the parent's
-        // value and the tier-0 `#false` slot's neighbours); the
-        // `#false` entries themselves are dropped regardless of
-        // tier. The result is no `-x` flag.
+    fn inheritance_leaf_false_clears_every_lower_tier() {
+        // The leaf's `#false` sets max_false_tier to its tier (3),
+        // which must drop the tier-0 default value AND the tier-1
+        // parent value. Pins that the cascade applies to *all*
+        // lower tiers, not just the immediate parent.
         let cfg = parse(
             r#"foo {
-                x #false
+                x "from-default"
                 parent { x "from-parent" }
-                child extends="parent" { x #false }
+                grandchild extends="parent" {}
+                leaf extends="grandchild" { x #false }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("leaf")).unwrap();
+        assert_eq!(flatten(&r), Vec::<(String, String)>::new());
+    }
+
+    #[test]
+    fn inheritance_marked_false_clears_lower_tiers_too() {
+        // A `+`-prefixed `#false` at a profile tier is still a
+        // `#false`: it raises max_false_tier and wipes lower tiers.
+        // Pins that the marker does not opt the entry out of
+        // suppression's tier-drop.
+        let cfg = parse(
+            r#"foo {
+                x "from-default"
+                parent { x "from-parent" }
+                child extends="parent" { +x #false }
             }"#,
         );
         let r = resolve(&cfg, "foo", Some("child")).unwrap();

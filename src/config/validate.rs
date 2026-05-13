@@ -991,11 +991,11 @@ mod tests {
     }
 
     #[test]
-    fn extends_cycle_detected_even_with_clean_sibling_first() {
-        // A clean (cycle-free) profile is declared before the
-        // cycle. The outer walk visits `clean` first, memoises
-        // its chain, and must still detect the downstream cycle
-        // when it reaches `a`.
+    fn extends_cycle_detected_when_iteration_starts_at_clean_sibling() {
+        // The outer profile walk visits children in source order;
+        // a cycle declared after a clean profile must still surface.
+        // Pins that the iteration continues past a clean profile
+        // rather than short-circuiting after the first walk.
         let err = parse_and_validate(
             r#"foo {
                 clean {}
@@ -1008,10 +1008,11 @@ mod tests {
     }
 
     #[test]
-    fn extends_shared_ancestor_validates_each_leaf() {
-        // Two leaves share the same parent. The memoisation in
-        // walk_inheritance should let the second walk short-circuit
-        // on the already-clean parent without re-failing.
+    fn extends_shared_ancestor_both_leaves_validate_cleanly() {
+        // Two leaves share the same parent — neither should fail.
+        // Indirectly exercises the walk_inheritance memoisation
+        // path (the second leaf's walk hits a `clean` parent and
+        // breaks early) without asserting on internal state.
         parse_and_validate(
             r#"foo {
                 root {}
