@@ -1,0 +1,14 @@
+---
+source: src/errors.rs
+assertion_line: 914
+expression: render_for_snapshot(&err)
+---
+  × `extends` value must be a string profile name
+   ╭─[jig.kdl:2:17]
+ 1 │ foo {
+ 2 │   child extends=#true {}
+   ·                 ──┬──
+   ·                   ╰── not a string
+ 3 │ }
+   ╰────
+  help: write `extends="parent-profile"` to inherit from `parent-profile`

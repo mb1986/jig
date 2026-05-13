@@ -120,21 +120,24 @@ fn parse_command_body(
             }
             AnnotationKind::None => {
                 if let Some(child_doc) = node.children() {
-                    // Has children → profile.
-                    reject_properties(node, src)?;
+                    // Has children → profile. Reject positional values
+                    // on profile nodes (they have no v1 meaning); allow
+                    // only the named property `extends="<parent>"` per
+                    // `SPEC.md` §2.8.5.
                     if let Some(extra) = node.entries().iter().find(|e| e.name().is_none()) {
                         return Err(Error::FlagMultipleValues {
                             src: src.clone(),
                             span: extra.span(),
                         });
                     }
+                    let extends = parse_profile_extends(node, src)?;
                     let name = node.name().value().to_string();
                     let name_span = node.name().span();
                     let (args, profile_env) = parse_profile_body(child_doc, src)?;
                     children.push(CommandChild::Profile {
                         name,
                         name_span,
-                        extends: None,
+                        extends,
                         args,
                         env: profile_env,
                     });
@@ -146,6 +149,46 @@ fn parse_command_body(
         }
     }
     Ok((children, env))
+}
+
+/// Parse the inheritance pointer from a profile node's properties.
+/// Per `SPEC.md` §2.8.5 a profile may carry exactly one named
+/// property `extends="<parent>"` where the value is a string; any
+/// other property is rejected. Returns `None` when no `extends`
+/// property is present.
+fn parse_profile_extends(
+    node: &KdlNode,
+    src: &NamedSource<String>,
+) -> Result<Option<(String, miette::SourceSpan)>> {
+    let mut extends: Option<(String, miette::SourceSpan)> = None;
+    for entry in node.entries() {
+        let Some(prop_name) = entry.name() else {
+            // Unnamed (positional) entries are rejected by the caller.
+            continue;
+        };
+        if prop_name.value() != "extends" {
+            return Err(Error::UnsupportedPropertyOnProfile {
+                name: prop_name.value().to_string(),
+                src: src.clone(),
+                span: entry.span(),
+            });
+        }
+        if let Some((_, first)) = &extends {
+            return Err(Error::DuplicateProfileExtends {
+                src: src.clone(),
+                first: *first,
+                second: entry.span(),
+            });
+        }
+        let KdlValue::String(parent) = entry.value() else {
+            return Err(Error::ProfileExtendsBadValue {
+                src: src.clone(),
+                span: entry.span(),
+            });
+        };
+        extends = Some((parent.clone(), entry.span()));
+    }
+    Ok(extends)
 }
 
 /// Parse the body of a profile node — arguments and `(env)`
@@ -889,5 +932,79 @@ mod tests {
         assert!(matches!(&args[0], Argument::Flag { .. }));
         assert!(matches!(&args[1], Argument::Flag { .. }));
         assert!(matches!(args[2], Argument::Positional(_)));
+    }
+
+    // --- §2.8.5 `extends` property on profile nodes ---
+
+    #[test]
+    fn profile_with_extends_property_captured() {
+        let cfg = parse(
+            r#"foo {
+                parent { x "1" }
+                child extends="parent" { y "2" }
+            }"#,
+        )
+        .unwrap();
+        let CommandChild::Profile {
+            name,
+            extends,
+            args,
+            ..
+        } = &cfg.commands[0].children[1]
+        else {
+            panic!("expected profile at index 1");
+        };
+        assert_eq!(name, "child");
+        let (parent, _span) = extends.as_ref().expect("extends should be set");
+        assert_eq!(parent, "parent");
+        // Body still parses normally.
+        assert_eq!(args.len(), 1);
+    }
+
+    #[test]
+    fn profile_without_extends_keeps_none() {
+        let cfg = parse(r"foo { fast { timeout 5 } }").unwrap();
+        let CommandChild::Profile { extends, .. } = &cfg.commands[0].children[0] else {
+            panic!();
+        };
+        assert!(extends.is_none());
+    }
+
+    #[test]
+    fn profile_extends_non_string_rejected() {
+        for snippet in [
+            r"foo { child extends=#true {} }",
+            r"foo { child extends=42 {} }",
+            r"foo { child extends=#false {} }",
+        ] {
+            let err = parse(snippet).unwrap_err();
+            assert!(
+                matches!(err, Error::ProfileExtendsBadValue { .. }),
+                "expected ProfileExtendsBadValue for {snippet:?}, got {err:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn profile_with_unknown_property_rejected() {
+        let err = parse(r#"foo { child base="parent" {} }"#).unwrap_err();
+        let Error::UnsupportedPropertyOnProfile { name, .. } = err else {
+            panic!("expected UnsupportedPropertyOnProfile");
+        };
+        assert_eq!(name, "base");
+    }
+
+    #[test]
+    fn profile_with_duplicate_extends_rejected() {
+        let err = parse(r#"foo { child extends="a" extends="b" {} }"#).unwrap_err();
+        assert!(matches!(err, Error::DuplicateProfileExtends { .. }));
+    }
+
+    #[test]
+    fn profile_with_positional_value_still_rejected() {
+        // A positional ("value") on a profile node remains a parse
+        // error — only `extends="<parent>"` is allowed.
+        let err = parse(r#"foo { child "parent" {} }"#).unwrap_err();
+        assert!(matches!(err, Error::FlagMultipleValues { .. }));
     }
 }

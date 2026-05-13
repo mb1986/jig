@@ -1,0 +1,14 @@
+---
+source: src/errors.rs
+assertion_line: 904
+expression: render_for_snapshot(&err)
+---
+  × unsupported property "base" on profile node
+   ╭─[jig.kdl:2:9]
+ 1 │ foo {
+ 2 │   child base="parent" {}
+   ·         ──────┬──────
+   ·               ╰── not a recognised property
+ 3 │ }
+   ╰────
+  help: only the `extends` property is allowed on a profile node (e.g. `child extends="parent" { ... }`); remove this property or rename it to `extends`

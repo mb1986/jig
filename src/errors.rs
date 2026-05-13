@@ -381,6 +381,56 @@ pub enum Error {
         command_span: SourceSpan,
     },
 
+    /// A profile node carries a KDL property other than `extends`.
+    /// Per `SPEC.md` §2.8.5 only the `extends` property is recognised
+    /// on a profile (it names the parent for inheritance); every
+    /// other property is rejected at parse time.
+    #[error("unsupported property {name:?} on profile node")]
+    #[diagnostic(help(
+        "only the `extends` property is allowed on a profile node (e.g. `child extends=\"parent\" {{ ... }}`); remove this property or rename it to `extends`"
+    ))]
+    UnsupportedPropertyOnProfile {
+        /// The offending property name.
+        name: String,
+        /// Source the span points into.
+        #[source_code]
+        src: NamedSource<String>,
+        /// Span of the offending property.
+        #[label("not a recognised property")]
+        span: SourceSpan,
+    },
+
+    /// A profile node's `extends` property carries a non-string
+    /// value. The parent profile is named by a single string.
+    #[error("`extends` value must be a string profile name")]
+    #[diagnostic(help("write `extends=\"parent-profile\"` to inherit from `parent-profile`"))]
+    ProfileExtendsBadValue {
+        /// Source the span points into.
+        #[source_code]
+        src: NamedSource<String>,
+        /// Span of the offending value.
+        #[label("not a string")]
+        span: SourceSpan,
+    },
+
+    /// A profile node has more than one `extends` property. v1
+    /// supports single-parent inheritance only.
+    #[error("profile has `extends` specified more than once")]
+    #[diagnostic(help(
+        "a profile may inherit from at most one parent in v1; remove the duplicate `extends`"
+    ))]
+    DuplicateProfileExtends {
+        /// Source the spans point into.
+        #[source_code]
+        src: NamedSource<String>,
+        /// Span of the first `extends` site.
+        #[label("first `extends` here")]
+        first: SourceSpan,
+        /// Span of the second `extends` site.
+        #[label("also here")]
+        second: SourceSpan,
+    },
+
     /// Two profiles within the same command share a name. Per
     /// `SPEC.md` §2.9.
     #[error("profile {name:?} is defined more than once in command {command:?}")]
@@ -540,6 +590,9 @@ impl Error {
             | Self::DuplicateCommandWithoutAlias { .. }
             | Self::DuplicateAlias { .. }
             | Self::CommandAliasCollision { .. }
+            | Self::UnsupportedPropertyOnProfile { .. }
+            | Self::ProfileExtendsBadValue { .. }
+            | Self::DuplicateProfileExtends { .. }
             | Self::DuplicateProfile { .. }
             | Self::UnknownCommand { .. }
             | Self::AmbiguousCommand { .. }
@@ -831,6 +884,47 @@ mod tests {
             src,
             first: SourceSpan::from((13, 1)),
             second: SourceSpan::from((25, 1)),
+        };
+        insta::assert_snapshot!(render_for_snapshot(&err));
+    }
+
+    #[test]
+    fn unsupported_property_on_profile_renders() {
+        let src = NamedSource::new(
+            "jig.kdl",
+            "foo {\n  child base=\"parent\" {}\n}\n".to_string(),
+        );
+        let err = Error::UnsupportedPropertyOnProfile {
+            name: "base".to_string(),
+            src,
+            span: SourceSpan::from((14, 13)),
+        };
+        insta::assert_snapshot!(render_for_snapshot(&err));
+    }
+
+    #[test]
+    fn profile_extends_bad_value_renders() {
+        let src = NamedSource::new(
+            "jig.kdl",
+            "foo {\n  child extends=#true {}\n}\n".to_string(),
+        );
+        let err = Error::ProfileExtendsBadValue {
+            src,
+            span: SourceSpan::from((22, 5)),
+        };
+        insta::assert_snapshot!(render_for_snapshot(&err));
+    }
+
+    #[test]
+    fn duplicate_profile_extends_renders() {
+        let src = NamedSource::new(
+            "jig.kdl",
+            "foo {\n  child extends=\"a\" extends=\"b\" {}\n}\n".to_string(),
+        );
+        let err = Error::DuplicateProfileExtends {
+            src,
+            first: SourceSpan::from((14, 11)),
+            second: SourceSpan::from((26, 11)),
         };
         insta::assert_snapshot!(render_for_snapshot(&err));
     }
