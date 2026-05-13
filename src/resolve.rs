@@ -761,6 +761,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn single_mode_position_uses_earliest_source_idx_when_profile_precedes_default() {
+        // Regression pin for the spec-correct generalisation of
+        // §2.8.1: when the selected profile's slot precedes the
+        // overriding default in source order, the merged occurrence
+        // emits at the profile's slot (earliest source index), not
+        // at the default's slot. Pre-inheritance code emitted at
+        // the default's slot — this config makes the divergence
+        // observable because `verbose` sits between them.
+        let cfg = parse(
+            r"some-tool {
+                fast {
+                    timeout 5
+                }
+                verbose #true
+                timeout 10
+            }",
+        );
+        let r = resolve(&cfg, "some-tool", Some("fast")).unwrap();
+        assert_eq!(
+            flatten(&r),
+            vec![
+                ("--timeout".into(), "5".into()),
+                ("--verbose".into(), String::new()),
+            ]
+        );
+    }
+
     // --- §2.7 / §2.8 profiles as positional slots ---
 
     #[test]
@@ -1871,6 +1899,51 @@ mod tests {
                     name: "C".into(),
                     value: "from-parent".into(),
                 },
+            ]
+        );
+    }
+
+    #[test]
+    fn inheritance_false_at_both_defaults_and_leaf_drops_both_falses() {
+        // Both tier 0 (defaults) and tier 2 (leaf) carry `#false`
+        // for the same key. The leaf's `#false` sets max_false_tier
+        // to 2, dropping tier-<2 entries (including the parent's
+        // value and the tier-0 `#false` slot's neighbours); the
+        // `#false` entries themselves are dropped regardless of
+        // tier. The result is no `-x` flag.
+        let cfg = parse(
+            r#"foo {
+                x #false
+                parent { x "from-parent" }
+                child extends="parent" { x #false }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        assert_eq!(flatten(&r), Vec::<(String, String)>::new());
+    }
+
+    #[test]
+    fn inheritance_unselected_sibling_interleaved_does_not_leak() {
+        // An unselected sibling sitting between two activated chain
+        // profiles in source order must contribute nothing. Pins
+        // that the `tier_of` filter rejects non-chain profiles
+        // even when they share a key with the chain.
+        let cfg = parse(
+            r#"foo {
+                parent { x "from-parent" }
+                other {
+                    x "from-other"
+                    y "leaked"
+                }
+                child extends="parent" { z "from-child" }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        assert_eq!(
+            flatten(&r),
+            vec![
+                ("-x".into(), "from-parent".into()),
+                ("-z".into(), "from-child".into()),
             ]
         );
     }

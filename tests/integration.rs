@@ -396,6 +396,86 @@ fn unknown_profile_exits_125_with_available_list() {
 }
 
 #[test]
+fn dry_run_resolves_profile_inheritance_end_to_end() {
+    // End-to-end pipe: parse → validate → resolve → format → print.
+    // `qwen-coder-large` inherits from `qwen-coder` and overrides
+    // only `-m`. Defaults pass through; `-ngl 999` is inherited.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        r#"llama-server "serve" {
+    host "0.0.0.0"
+    port 8090
+
+    qwen-coder {
+        m "/models/qwen-coder.gguf"
+        -ngl 999
+    }
+
+    qwen-coder-large extends="qwen-coder" {
+        m "/models/qwen-coder-large.gguf"
+    }
+}
+"#,
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--dry-run")
+        .arg("serve")
+        .arg("qwen-coder-large")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains(
+            "llama-server --host 0.0.0.0 --port 8090 -m /models/qwen-coder-large.gguf -ngl 999",
+        ));
+}
+
+#[test]
+fn unknown_extends_parent_exits_125_with_help() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        r#"foo {
+    parent {}
+    child extends="paren" {}
+}
+"#,
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("serve")
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains(
+            "extends unknown profile \"paren\"",
+        ))
+        .stderr(predicate::str::contains("did you mean \"parent\""));
+}
+
+#[test]
+fn extends_cycle_exits_125_with_cycle_path() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        r#"foo {
+    a extends="b" {}
+    b extends="a" {}
+}
+"#,
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("foo")
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains("profile inheritance cycle"))
+        .stderr(predicate::str::contains("a → b → a").or(predicate::str::contains("b → a → b")));
+}
+
+#[test]
 fn dry_run_for_spec_5_1_llama_server() {
     let dir = tempdir().unwrap();
     fs::write(

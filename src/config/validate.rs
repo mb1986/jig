@@ -991,6 +991,38 @@ mod tests {
     }
 
     #[test]
+    fn extends_cycle_detected_even_with_clean_sibling_first() {
+        // A clean (cycle-free) profile is declared before the
+        // cycle. The outer walk visits `clean` first, memoises
+        // its chain, and must still detect the downstream cycle
+        // when it reaches `a`.
+        let err = parse_and_validate(
+            r#"foo {
+                clean {}
+                a extends="b" {}
+                b extends="a" {}
+            }"#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::ProfileInheritanceCycle { .. }));
+    }
+
+    #[test]
+    fn extends_shared_ancestor_validates_each_leaf() {
+        // Two leaves share the same parent. The memoisation in
+        // walk_inheritance should let the second walk short-circuit
+        // on the already-clean parent without re-failing.
+        parse_and_validate(
+            r#"foo {
+                root {}
+                leaf-a extends="root" {}
+                leaf-b extends="root" {}
+            }"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn extends_target_only_searches_same_command() {
         // A profile named `parent` exists in command `bar`, not `foo`;
         // the unknown-parent error must fire for `foo.child`.
