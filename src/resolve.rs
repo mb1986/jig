@@ -1,5 +1,5 @@
 //! Resolve a CLI invocation against a parsed [`Config`] into the
-//! candidate argument list per `SPEC.md` §2.8 and §4.
+//! candidate argument list per `SPEC.md` §2.8, §2.8.5, and §4.
 //!
 //! The algorithm:
 //!
@@ -8,32 +8,35 @@
 //! 2. If a profile name was supplied, look it up within the matched
 //!    command. Return [`Error::UnknownProfile`] (with did-you-mean
 //!    and an "available" list) on miss.
-//! 3. Walk the command's children in source order. Defaults push
-//!    one candidate each; the **selected** profile contributes its
-//!    own children (in source order); other profiles are skipped
-//!    (`SPEC.md` §2.7).
-//! 4. Group flag candidates by resolved CLI form (per §2.5). For
-//!    each key build an emission plan per the per-key resolution in
-//!    `SPEC.md` §2.8:
-//!    - Suppression: profile-side `#false` (regardless of `+`
-//!      marker) drops *all* default occurrences of the key and
-//!      drops the `#false` entries themselves. Default-side `#false`
-//!      drops just that occurrence.
-//!    - Partition surviving entries into unmarked default,
-//!      unmarked profile, and marked (`+` prefix on either side).
-//!    - Marked entries always emit at their own source position
-//!      with their own value.
-//!    - Unmarked entries fall into single mode (≤ 1 on each side
-//!      → v1 first-occurrence positioning with profile-value
-//!      precedence) or repeat mode (otherwise → emit each at its
-//!      own source position).
-//! 5. Resolve env-var contributions on a parallel channel
-//!    (`SPEC.md` §2.11): walk the command's defaults env list, then
-//!    the selected profile's env list; for each name pick at most
-//!    one outcome — profile-side `Unset` wins over profile-side
-//!    `Set` wins over default-side `Unset` wins over default-side
-//!    `Set`. The outcome is emitted at the first-occurrence walk
-//!    position so `--list` and `--dry-run` order is deterministic.
+//! 3. Build the inheritance chain for the selected leaf by walking
+//!    `extends` pointers (§2.8.5). Validation guarantees the chain
+//!    is acyclic and that every parent resolves to a sibling
+//!    profile, so the walk is total. Tier 0 is defaults; the root
+//!    ancestor is tier 1; the selected leaf is tier N.
+//! 4. Walk the command's children in source order. Defaults push
+//!    one candidate each at tier 0; every profile in the chain
+//!    pushes its body's children at its own tier; other profiles
+//!    are skipped (`SPEC.md` §2.7).
+//! 5. Group flag candidates by resolved CLI form (per §2.5). For
+//!    each key build an emission plan per the per-key cascade in
+//!    `SPEC.md` §2.8 / §2.8.5:
+//!    - Suppression: a `#false` at tier T > 0 drops every entry at
+//!      tiers `< T` for that key. A `#false` at tier 0 drops only
+//!      itself. Every `#false` entry is itself dropped.
+//!    - Marked entries (`+` prefix) always emit at their own source
+//!      position with their own value.
+//!    - Unmarked entries fall into single mode when *every* tier
+//!      contributes ≤ 1 unmarked survivor (one occurrence emits at
+//!      the earliest source index, with the highest-tier value) or
+//!      repeat mode otherwise (every unmarked occurrence emits at
+//!      its own source index).
+//! 6. Resolve env-var contributions on a parallel channel
+//!    (`SPEC.md` §2.11 / §2.8.5): build per-tier env slices in
+//!    ascending order (defaults, root, …, leaf). For each name,
+//!    walk tiers descending and pick the first tier that has an
+//!    outcome (Set or Unset); the per-name outcome is emitted at
+//!    the first-occurrence walk position in the ascending order
+//!    so `--list` and `--dry-run` orderings stay deterministic.
 //!
 //! Positionals are not subject to override or suppression and are
 //! emitted at their walk position in source order.
@@ -91,35 +94,54 @@ pub fn resolve(config: &Config, name: &str, profile: Option<&str>) -> Result<Res
         Some(p) => Some(lookup_profile(cmd, p)?),
     };
 
-    // Step 1: walk children, tagging each candidate with its origin
-    // tier. Defaults are tier 0; the selected profile is tier 1.
-    // The N-tier shape will let inherited-parent contributions slot
-    // in at higher tiers without restructuring the merge in §5.
+    // Step 1: build the inheritance chain for the selected leaf.
+    // `chain[i]` is the i-th ancestor (0 = root, last = leaf). Tier
+    // assignment is `i + 1`, so defaults stay at tier 0 and the leaf
+    // sits at the highest tier. With no profile selected the chain
+    // is empty and only defaults activate.
+    let chain: Vec<&str> =
+        selected_profile.map_or_else(Vec::new, |leaf| inheritance_chain(cmd, leaf));
+    let tier_of: HashMap<&str, usize> =
+        chain.iter().enumerate().map(|(i, &n)| (n, i + 1)).collect();
+
+    // Step 2: walk children, tagging each candidate with its origin
+    // tier. Defaults are tier 0; profiles in the chain emit their
+    // body candidates at the matching tier. Other profiles are
+    // skipped (§2.7).
     let mut candidates: Vec<(Argument, usize /* tier */)> = Vec::new();
     for child in &cmd.children {
         match child {
             CommandChild::Default(arg) => candidates.push((arg.clone(), 0)),
-            CommandChild::Profile { name, args, .. } if Some(name.as_str()) == selected_profile => {
+            CommandChild::Profile { name, args, .. } if tier_of.contains_key(name.as_str()) => {
+                let tier = tier_of[name.as_str()];
                 for arg in args {
-                    candidates.push((arg.clone(), 1));
+                    candidates.push((arg.clone(), tier));
                 }
             }
             CommandChild::Profile { .. } => {}
         }
     }
 
-    // Resolve env-var contributions on a parallel channel.
-    let profile_env: &[EnvEntry] = selected_profile
-        .and_then(|p| {
-            cmd.children.iter().find_map(|c| match c {
-                CommandChild::Profile { name, env, .. } if name == p => Some(env.as_slice()),
+    // Resolve env-var contributions on a parallel channel. Tier
+    // ordering mirrors the argv side: defaults at tier 0, then each
+    // ancestor's env in chain order, then the leaf's env.
+    let mut per_tier_env: Vec<&[EnvEntry]> = vec![cmd.env.as_slice()];
+    for &profile_name in &chain {
+        let env_slice = cmd
+            .children
+            .iter()
+            .find_map(|c| match c {
+                CommandChild::Profile { name, env, .. } if name == profile_name => {
+                    Some(env.as_slice())
+                }
                 _ => None,
             })
-        })
-        .unwrap_or(&[]);
-    let env = resolve_env(&cmd.env, profile_env);
+            .expect("invariant: chain entries reference defined profiles");
+        per_tier_env.push(env_slice);
+    }
+    let env = resolve_env(&per_tier_env);
 
-    // Step 2: group flag candidates by resolved CLI form, then
+    // Step 3: group flag candidates by resolved CLI form, then
     // compute the emission plan per key. The plan records, for each
     // emitting source index, the value to use at that position;
     // indices not present are suppressed (whether by collapse or by
@@ -135,7 +157,7 @@ pub fn resolve(config: &Config, name: &str, profile: Option<&str>) -> Result<Res
         plan_key(&candidates, indices, &mut emit_value);
     }
 
-    // Step 3: assemble. Positionals always emit; flags emit iff they
+    // Step 4: assemble. Positionals always emit; flags emit iff they
     // appear in the plan, taking the planned value (which is what
     // makes profile override work in single mode).
     let mut out: Vec<Argument> = Vec::with_capacity(candidates.len());
@@ -167,98 +189,70 @@ pub fn resolve(config: &Config, name: &str, profile: Option<&str>) -> Result<Res
     })
 }
 
-/// Resolve env-var outcomes per `SPEC.md` §2.11. Walks
-/// `defaults_env` then `profile_env`; for each distinct name,
-/// profile-side wins over default-side and `Unset` wins over `Set`
-/// on the same side. The outcome is emitted at the first-occurrence
-/// walk position.
-fn resolve_env(defaults_env: &[EnvEntry], profile_env: &[EnvEntry]) -> Vec<EnvOp> {
-    // First-occurrence ordering: stable index of first appearance
-    // per name across the (defaults, profile) walk.
+/// Resolve env-var outcomes per `SPEC.md` §2.11 / §2.8.5. The slices
+/// in `per_tier_env` are ordered ascending: `[0]` is the command's
+/// defaults, `[1]` is the root ancestor's env, `[N]` is the
+/// selected leaf's env. For each distinct name in the concatenated
+/// walk we emit one outcome at its first-occurrence position; the
+/// outcome itself is decided by [`pick_env_outcome`] (descending
+/// walk, highest tier wins).
+fn resolve_env(per_tier_env: &[&[EnvEntry]]) -> Vec<EnvOp> {
+    // First-occurrence ordering across the ascending concatenated
+    // walk so `--list` / `--dry-run` output stays deterministic.
     let mut first_index: HashMap<&str, usize> = HashMap::new();
     let mut order: Vec<&str> = Vec::new();
-    for entry in defaults_env.iter().chain(profile_env.iter()) {
-        if !first_index.contains_key(entry.name.as_str()) {
-            first_index.insert(entry.name.as_str(), order.len());
-            order.push(entry.name.as_str());
+    for slice in per_tier_env {
+        for entry in *slice {
+            if !first_index.contains_key(entry.name.as_str()) {
+                first_index.insert(entry.name.as_str(), order.len());
+                order.push(entry.name.as_str());
+            }
         }
     }
 
-    // Per-name resolution. For each name, pick the winning outcome
-    // by the precedence in §2.11.
     let mut out: Vec<EnvOp> = Vec::with_capacity(order.len());
     for name in order {
-        let outcome = pick_env_outcome(name, defaults_env, profile_env);
-        out.push(outcome);
+        out.push(pick_env_outcome(name, per_tier_env));
     }
     out
 }
 
-fn pick_env_outcome(name: &str, defaults: &[EnvEntry], profile: &[EnvEntry]) -> EnvOp {
-    // Profile-side `Unset` wins over everything.
-    if profile
-        .iter()
-        .any(|e| e.name == name && matches!(e.value, EnvValue::Unset))
-    {
-        return EnvOp::Unset {
-            name: name.to_string(),
-        };
+/// Pick the winning outcome for one env-var name across all tiers.
+/// Walks tiers descending (leaf → … → defaults); the first tier
+/// that has an outcome for `name` wins. Per-scope uniqueness
+/// (validation §2.9) guarantees at most one entry per name per
+/// tier, so the in-slice search is unambiguous.
+fn pick_env_outcome(name: &str, per_tier_env: &[&[EnvEntry]]) -> EnvOp {
+    for slice in per_tier_env.iter().rev() {
+        if let Some(entry) = slice.iter().find(|e| e.name == name) {
+            return match &entry.value {
+                EnvValue::Set(v) => EnvOp::Set {
+                    name: name.to_string(),
+                    value: v.clone(),
+                },
+                EnvValue::Unset => EnvOp::Unset {
+                    name: name.to_string(),
+                },
+            };
+        }
     }
-    // Then profile-side `Set`. Validation enforces per-scope
-    // uniqueness, so at most one entry can match.
-    if let Some(value) = profile
-        .iter()
-        .find_map(|e| match (&e.value, e.name == name) {
-            (EnvValue::Set(v), true) => Some(v.clone()),
-            _ => None,
-        })
-    {
-        return EnvOp::Set {
-            name: name.to_string(),
-            value,
-        };
-    }
-    // Then default-side `Unset`.
-    if defaults
-        .iter()
-        .any(|e| e.name == name && matches!(e.value, EnvValue::Unset))
-    {
-        return EnvOp::Unset {
-            name: name.to_string(),
-        };
-    }
-    // Otherwise default-side `Set` (validation guarantees per-scope
-    // uniqueness, so at most one such entry exists).
-    let value = defaults
-        .iter()
-        .find_map(|e| match (&e.value, e.name == name) {
-            (EnvValue::Set(v), true) => Some(v.clone()),
-            _ => None,
-        })
-        .expect("invariant: name was added to `order` from one of the two slices");
-    EnvOp::Set {
-        name: name.to_string(),
-        value,
-    }
+    unreachable!("invariant: name was added to `order` from one of the tier slices")
 }
 
-/// Per-key resolution per `SPEC.md` §2.8. Reads the candidates at
-/// `indices` (all sharing a resolved CLI key), applies suppression
-/// and the single/repeat/marker rules, and writes the resulting
-/// emission decisions into `emit_value`.
+/// Per-key resolution per `SPEC.md` §2.8 / §2.8.5. Reads the
+/// candidates at `indices` (all sharing a resolved CLI key), applies
+/// the N-tier suppression / mode / value / position rules, and
+/// writes the resulting emission decisions into `emit_value`.
 ///
 /// Each candidate carries a `tier` index: 0 for defaults, 1 for the
-/// selected profile (and, in §5, higher values for inherited parent
-/// tiers). The two-tier rules in §2.8 collapse onto the predicates
-/// `tier == 0` (defaults) and `tier > 0` (profile-side), and remain
-/// byte-identical to the prior boolean implementation.
+/// root ancestor, …, N for the selected leaf. With no inheritance
+/// the rules degenerate to the two-tier algorithm; the existing
+/// merge tests verify that byte-for-byte.
 fn plan_key(
     candidates: &[(Argument, usize)],
     indices: &[usize],
     emit_value: &mut HashMap<usize, FlagValue>,
 ) {
-    // Materialise each candidate's relevant fields. Borrow only;
-    // values are cloned at write time.
     struct Entry<'a> {
         idx: usize,
         tier: usize,
@@ -281,23 +275,29 @@ fn plan_key(
         })
         .collect();
 
-    // Suppression. Profile-side `#false` (any marker) clears every
-    // default contribution for this key; default-side `#false` only
-    // drops itself.
-    let profile_has_false = entries
+    // Suppression. The highest tier (T > 0) carrying a `#false` for
+    // this key clears every entry at tiers `< T`; in addition every
+    // `#false` entry is dropped, regardless of tier. A `#false` at
+    // tier 0 alone clears only itself.
+    let max_false_tier: Option<usize> = entries
         .iter()
-        .any(|e| e.tier > 0 && matches!(e.value, FlagValue::Bool(false)));
-    let surviving: Vec<&Entry<'_>> = if profile_has_false {
-        entries
-            .iter()
-            .filter(|e| e.tier > 0 && !matches!(e.value, FlagValue::Bool(false)))
-            .collect()
-    } else {
-        entries
-            .iter()
-            .filter(|e| !matches!(e.value, FlagValue::Bool(false)))
-            .collect()
-    };
+        .filter(|e| e.tier > 0 && matches!(e.value, FlagValue::Bool(false)))
+        .map(|e| e.tier)
+        .max();
+    let surviving: Vec<&Entry<'_>> = entries
+        .iter()
+        .filter(|e| {
+            if matches!(e.value, FlagValue::Bool(false)) {
+                return false;
+            }
+            if let Some(t) = max_false_tier
+                && e.tier < t
+            {
+                return false;
+            }
+            true
+        })
+        .collect();
 
     // Marked entries always emit at their own position, regardless
     // of unmarked-side mode.
@@ -306,37 +306,78 @@ fn plan_key(
     }
 
     // Unmarked entries decide single-mode vs repeat-mode.
-    let d_unmarked: Vec<&&Entry<'_>> = surviving
+    let unmarked: Vec<&&Entry<'_>> = surviving
         .iter()
-        .filter(|e| e.tier == 0 && e.mode == FlagMode::Plain)
+        .filter(|e| e.mode == FlagMode::Plain)
         .collect();
-    let p_unmarked: Vec<&&Entry<'_>> = surviving
-        .iter()
-        .filter(|e| e.tier > 0 && e.mode == FlagMode::Plain)
-        .collect();
+    if unmarked.is_empty() {
+        return;
+    }
 
-    if d_unmarked.len() <= 1 && p_unmarked.len() <= 1 {
-        // Single mode (v1 first-occurrence positioning). Position is
-        // the default's source index when present, else the
-        // profile's; value is the profile's when present, else the
-        // default's.
-        let pos_idx = if let Some(d) = d_unmarked.first() {
-            d.idx
-        } else if let Some(p) = p_unmarked.first() {
-            p.idx
-        } else {
-            return;
-        };
-        let value = p_unmarked
-            .first()
-            .map_or_else(|| d_unmarked[0].value.clone(), |p| p.value.clone());
+    // Single mode iff every tier contributes ≤ 1 unmarked survivor.
+    // For the 2-tier case (defaults + one profile) this matches the
+    // current `|D| ≤ 1 && |P| ≤ 1` predicate exactly.
+    let mut per_tier_count: HashMap<usize, usize> = HashMap::new();
+    for e in &unmarked {
+        *per_tier_count.entry(e.tier).or_insert(0) += 1;
+    }
+    let single_mode = per_tier_count.values().all(|&c| c <= 1);
+
+    if single_mode {
+        // Emit one occurrence: at the earliest source index across
+        // all unmarked survivors, with the value from the
+        // highest-tier survivor. For N=2 with defaults walked
+        // before the profile this coincides with §2.8.1's
+        // "default's index if present, else profile's"; for N ≥ 3
+        // (or for 2-tier configs where the profile precedes its
+        // overriding default in source order) "earliest source
+        // index" is the spec-correct generalisation.
+        let pos_idx = unmarked
+            .iter()
+            .map(|e| e.idx)
+            .min()
+            .expect("invariant: unmarked is non-empty");
+        let value = unmarked
+            .iter()
+            .max_by_key(|e| e.tier)
+            .expect("invariant: unmarked is non-empty")
+            .value
+            .clone();
         emit_value.insert(pos_idx, value);
     } else {
         // Repeat mode: every unmarked occurrence emits in place.
-        for e in d_unmarked.iter().chain(p_unmarked.iter()) {
+        for e in &unmarked {
             emit_value.insert(e.idx, e.value.clone());
         }
     }
+}
+
+/// Build the inheritance chain for `leaf` in `cmd`. Returns
+/// `[root, …, leaf]` by walking `extends` pointers upward. Per
+/// `SPEC.md` §2.8.5, validation has already proven the graph is
+/// acyclic and that every `extends` target resolves to a sibling
+/// profile, so the walk terminates and never produces a stray
+/// reference.
+fn inheritance_chain<'a>(cmd: &'a Command, leaf: &'a str) -> Vec<&'a str> {
+    let mut chain: Vec<&'a str> = vec![leaf];
+    let mut current: &'a str = leaf;
+    loop {
+        let parent = cmd.children.iter().find_map(|c| match c {
+            CommandChild::Profile { name, extends, .. } if name == current => {
+                extends.as_ref().map(|(p, _)| p.as_str())
+            }
+            _ => None,
+        });
+        match parent {
+            Some(p) => {
+                chain.push(p);
+                current = p;
+            }
+            None => break,
+        }
+    }
+    chain.reverse();
+    chain
 }
 
 /// Look up a command for completion-candidate emission. Mirrors the
@@ -1485,6 +1526,352 @@ mod tests {
         assert_eq!(
             flatten(&r),
             vec![("-v".into(), String::new()), ("-v".into(), String::new()),]
+        );
+    }
+
+    // --- §2.8.5 profile inheritance: N-tier cascade ---
+
+    #[test]
+    fn inheritance_chain_helper_returns_root_to_leaf() {
+        let cfg = parse(
+            r#"foo {
+                grand {}
+                parent extends="grand" {}
+                child extends="parent" {}
+            }"#,
+        );
+        let chain = inheritance_chain(&cfg.commands[0], "child");
+        assert_eq!(chain, vec!["grand", "parent", "child"]);
+    }
+
+    #[test]
+    fn inheritance_two_level_child_overrides_parent_flag() {
+        let cfg = parse(
+            r#"foo {
+                qwen-coder {
+                    m "/p1"
+                    -ngl 999
+                }
+                qwen-coder-large extends="qwen-coder" {
+                    m "/p2"
+                }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("qwen-coder-large")).unwrap();
+        // `m`: parent (tier 1, idx 0) + child (tier 2, idx 2). Each
+        // tier has ≤ 1 → single mode. Highest-tier value (child's
+        // `/p2`) wins; earliest idx is the parent's slot (0).
+        // `-ngl`: only tier 1 (idx 1). Single mode at idx 1.
+        assert_eq!(
+            flatten(&r),
+            vec![("-m".into(), "/p2".into()), ("-ngl".into(), "999".into()),]
+        );
+    }
+
+    #[test]
+    fn inheritance_three_level_leaf_wins() {
+        let cfg = parse(
+            r#"foo {
+                grand { x "from-grand" }
+                parent extends="grand" { x "from-parent" }
+                child extends="parent" { x "from-child" }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        assert_eq!(flatten(&r), vec![("-x".into(), "from-child".into())]);
+    }
+
+    #[test]
+    fn inheritance_selecting_middle_starts_shorter_chain() {
+        // Selecting `parent` activates `grand` + `parent` but not
+        // `child`. The leaf-side value comes from `parent`.
+        let cfg = parse(
+            r#"foo {
+                grand { x "from-grand" }
+                parent extends="grand" { x "from-parent" }
+                child extends="parent" { x "from-child" }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("parent")).unwrap();
+        assert_eq!(flatten(&r), vec![("-x".into(), "from-parent".into())]);
+    }
+
+    #[test]
+    fn inheritance_unselected_sibling_does_not_activate() {
+        // `sibling` extends `parent` too but isn't selected — its
+        // body must not appear in the resolved output.
+        let cfg = parse(
+            r#"foo {
+                parent { x "from-parent" }
+                child extends="parent" { y "from-child" }
+                sibling extends="parent" { z "from-sibling" }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        assert_eq!(
+            flatten(&r),
+            vec![
+                ("-x".into(), "from-parent".into()),
+                ("-y".into(), "from-child".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn inheritance_forward_declaration_emits_at_each_slot() {
+        // Child declared before parent in source order. Each profile
+        // still emits at its own slot.
+        let cfg = parse(
+            r#"foo {
+                child extends="parent" { y "from-child" }
+                parent { x "from-parent" }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        assert_eq!(
+            flatten(&r),
+            vec![
+                ("-y".into(), "from-child".into()),
+                ("-x".into(), "from-parent".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn inheritance_false_at_middle_tier_wipes_lower_only() {
+        let cfg = parse(
+            r#"foo {
+                x "default"
+                grand { x "from-grand" }
+                parent extends="grand" { x #false }
+                child extends="parent" { x "from-child" }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        // For `x`: tier-2 `#false` clears tier 0 + tier 1. Tier 3
+        // (`from-child`) survives; single mode emits it.
+        assert_eq!(flatten(&r), vec![("-x".into(), "from-child".into())]);
+    }
+
+    #[test]
+    fn inheritance_false_at_leaf_clears_marker_at_ancestor() {
+        // Leaf `#false` wipes every lower tier, including a `+`
+        // ancestor entry, because the marker rule applies after
+        // tier-based suppression.
+        let cfg = parse(
+            r#"foo {
+                parent {
+                    +I "/extra"
+                }
+                child extends="parent" {
+                    I #false
+                }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        assert_eq!(flatten(&r), Vec::<(String, String)>::new());
+    }
+
+    #[test]
+    fn inheritance_marker_at_ancestor_survives_with_leaf_value() {
+        let cfg = parse(
+            r#"foo {
+                parent {
+                    +I "/extra"
+                }
+                child extends="parent" {
+                    I "/main"
+                }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        // Parent `+I /extra` emits at its own slot (idx 0); child
+        // unmarked `I /main` collapses (each tier has 1 unmarked
+        // ⇒ single mode), value from highest tier, position at
+        // earliest idx (child's slot, idx 1).
+        assert_eq!(
+            flatten(&r),
+            vec![
+                ("-I".into(), "/extra".into()),
+                ("-I".into(), "/main".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn inheritance_repeat_mode_from_ancestor_and_leaf_combined() {
+        let cfg = parse(
+            r#"gcc {
+                parent { I "/a" }
+                child extends="parent" {
+                    I "/b"
+                    I "/c"
+                }
+            }"#,
+        );
+        let r = resolve(&cfg, "gcc", Some("child")).unwrap();
+        // Tier 1 has 1 unmarked `I`, tier 2 has 2 → not all ≤ 1 →
+        // repeat mode. Every unmarked emits at its own position.
+        assert_eq!(
+            flatten(&r),
+            vec![
+                ("-I".into(), "/a".into()),
+                ("-I".into(), "/b".into()),
+                ("-I".into(), "/c".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn inheritance_repeat_mode_includes_defaults_too() {
+        let cfg = parse(
+            r#"gcc {
+                I "/sys1"
+                I "/sys2"
+                parent { I "/p" }
+                child extends="parent" { I "/c" }
+            }"#,
+        );
+        let r = resolve(&cfg, "gcc", Some("child")).unwrap();
+        // Tier 0 has 2 unmarked → repeat mode triggered. All four
+        // unmarked entries emit at their own position.
+        assert_eq!(
+            flatten(&r),
+            vec![
+                ("-I".into(), "/sys1".into()),
+                ("-I".into(), "/sys2".into()),
+                ("-I".into(), "/p".into()),
+                ("-I".into(), "/c".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn inheritance_defaults_and_chain_all_cascade() {
+        // Three-tier cascade exercising defaults + parent + child.
+        // `host` is set in defaults and parent → child overrides
+        // nothing → highest-tier value wins (parent's).
+        // `port` is set in defaults and child → child wins.
+        // `m` is only in child → only tier-3 source.
+        let cfg = parse(
+            r#"foo {
+                host "0.0.0.0"
+                port 8090
+                parent {
+                    host "parent-host"
+                    -ngl 999
+                }
+                child extends="parent" {
+                    port 8091
+                    m "/p"
+                }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        assert_eq!(
+            flatten(&r),
+            vec![
+                ("--host".into(), "parent-host".into()),
+                ("--port".into(), "8091".into()),
+                ("-ngl".into(), "999".into()),
+                ("-m".into(), "/p".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn inheritance_env_leaf_resets_ancestor_unset() {
+        let cfg = parse(
+            r#"foo {
+                parent { (env)A #false }
+                child extends="parent" { (env)A "from-leaf" }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        assert_eq!(
+            r.env,
+            vec![EnvOp::Set {
+                name: "A".into(),
+                value: "from-leaf".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn inheritance_env_leaf_unsets_ancestor_value() {
+        let cfg = parse(
+            r#"foo {
+                parent { (env)A "from-parent" }
+                child extends="parent" { (env)A #false }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        assert_eq!(r.env, vec![EnvOp::Unset { name: "A".into() }]);
+    }
+
+    #[test]
+    fn inheritance_env_ancestor_only_var_passes_through() {
+        let cfg = parse(
+            r#"foo {
+                (env)A "default"
+                parent { (env)B "from-parent" }
+                child extends="parent" {}
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        assert_eq!(
+            r.env,
+            vec![
+                EnvOp::Set {
+                    name: "A".into(),
+                    value: "default".into(),
+                },
+                EnvOp::Set {
+                    name: "B".into(),
+                    value: "from-parent".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn inheritance_env_three_tier_cascade() {
+        let cfg = parse(
+            r#"foo {
+                (env)A "default"
+                (env)B "default"
+                parent {
+                    (env)A "from-parent"
+                    (env)C "from-parent"
+                }
+                child extends="parent" {
+                    (env)A "from-child"
+                }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        // A: defaults → parent → child. Highest tier (child) wins.
+        // B: only in defaults.
+        // C: only in parent.
+        // Order is first-occurrence across ascending walk: A (idx 0
+        // in defaults), B (idx 1 in defaults), C (parent's first
+        // appearance).
+        assert_eq!(
+            r.env,
+            vec![
+                EnvOp::Set {
+                    name: "A".into(),
+                    value: "from-child".into(),
+                },
+                EnvOp::Set {
+                    name: "B".into(),
+                    value: "default".into(),
+                },
+                EnvOp::Set {
+                    name: "C".into(),
+                    value: "from-parent".into(),
+                },
+            ]
         );
     }
 }
