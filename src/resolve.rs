@@ -92,14 +92,16 @@ pub fn resolve(config: &Config, name: &str, profile: Option<&str>) -> Result<Res
     };
 
     // Step 1: walk children, tagging each candidate with its origin
-    // (default vs selected-profile).
-    let mut candidates: Vec<(Argument, bool /* from_profile */)> = Vec::new();
+    // tier. Defaults are tier 0; the selected profile is tier 1.
+    // The N-tier shape will let inherited-parent contributions slot
+    // in at higher tiers without restructuring the merge in §5.
+    let mut candidates: Vec<(Argument, usize /* tier */)> = Vec::new();
     for child in &cmd.children {
         match child {
-            CommandChild::Default(arg) => candidates.push((arg.clone(), false)),
+            CommandChild::Default(arg) => candidates.push((arg.clone(), 0)),
             CommandChild::Profile { name, args, .. } if Some(name.as_str()) == selected_profile => {
                 for arg in args {
-                    candidates.push((arg.clone(), true));
+                    candidates.push((arg.clone(), 1));
                 }
             }
             CommandChild::Profile { .. } => {}
@@ -244,8 +246,14 @@ fn pick_env_outcome(name: &str, defaults: &[EnvEntry], profile: &[EnvEntry]) -> 
 /// `indices` (all sharing a resolved CLI key), applies suppression
 /// and the single/repeat/marker rules, and writes the resulting
 /// emission decisions into `emit_value`.
+///
+/// Each candidate carries a `tier` index: 0 for defaults, 1 for the
+/// selected profile (and, in §5, higher values for inherited parent
+/// tiers). The two-tier rules in §2.8 collapse onto the predicates
+/// `tier == 0` (defaults) and `tier > 0` (profile-side), and remain
+/// byte-identical to the prior boolean implementation.
 fn plan_key(
-    candidates: &[(Argument, bool)],
+    candidates: &[(Argument, usize)],
     indices: &[usize],
     emit_value: &mut HashMap<usize, FlagValue>,
 ) {
@@ -253,20 +261,20 @@ fn plan_key(
     // values are cloned at write time.
     struct Entry<'a> {
         idx: usize,
-        from_profile: bool,
+        tier: usize,
         value: &'a FlagValue,
         mode: FlagMode,
     }
     let entries: Vec<Entry<'_>> = indices
         .iter()
         .map(|&i| {
-            let (arg, from_profile) = &candidates[i];
+            let (arg, tier) = &candidates[i];
             let Argument::Flag { value, mode, .. } = arg else {
                 unreachable!("invariant: by_key only references flag candidates");
             };
             Entry {
                 idx: i,
-                from_profile: *from_profile,
+                tier: *tier,
                 value,
                 mode: *mode,
             }
@@ -278,11 +286,11 @@ fn plan_key(
     // drops itself.
     let profile_has_false = entries
         .iter()
-        .any(|e| e.from_profile && matches!(e.value, FlagValue::Bool(false)));
+        .any(|e| e.tier > 0 && matches!(e.value, FlagValue::Bool(false)));
     let surviving: Vec<&Entry<'_>> = if profile_has_false {
         entries
             .iter()
-            .filter(|e| e.from_profile && !matches!(e.value, FlagValue::Bool(false)))
+            .filter(|e| e.tier > 0 && !matches!(e.value, FlagValue::Bool(false)))
             .collect()
     } else {
         entries
@@ -300,11 +308,11 @@ fn plan_key(
     // Unmarked entries decide single-mode vs repeat-mode.
     let d_unmarked: Vec<&&Entry<'_>> = surviving
         .iter()
-        .filter(|e| !e.from_profile && e.mode == FlagMode::Plain)
+        .filter(|e| e.tier == 0 && e.mode == FlagMode::Plain)
         .collect();
     let p_unmarked: Vec<&&Entry<'_>> = surviving
         .iter()
-        .filter(|e| e.from_profile && e.mode == FlagMode::Plain)
+        .filter(|e| e.tier > 0 && e.mode == FlagMode::Plain)
         .collect();
 
     if d_unmarked.len() <= 1 && p_unmarked.len() <= 1 {
