@@ -661,6 +661,47 @@ fn list_renders_spec_5_1_example_shape() {
 }
 
 #[test]
+fn list_shows_extends_on_inheriting_profile() {
+    // §2.8.5: an inheriting profile renders as `<name> (extends
+    // <parent>)` under the `profiles:` block. Plain (non-inheriting)
+    // profiles render without the suffix.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        r#"llama-server "serve" {
+    host "0.0.0.0"
+
+    qwen-coder {
+        m "/models/qwen-coder.gguf"
+        -ngl 999
+    }
+
+    qwen-coder-large extends="qwen-coder" {
+        m "/models/qwen-coder-large.gguf"
+    }
+}
+"#,
+    )
+    .unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .arg("--list")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains("    qwen-coder\n"),
+        "plain profile should render bare; stdout: {stdout:?}",
+    );
+    assert!(
+        stdout.contains("    qwen-coder-large (extends qwen-coder)\n"),
+        "inheriting profile should show `(extends <parent>)`; stdout: {stdout:?}",
+    );
+    insta::assert_snapshot!(stdout);
+}
+
+#[test]
 fn list_separates_commands_with_blank_line() {
     let dir = tempdir().unwrap();
     fs::write(

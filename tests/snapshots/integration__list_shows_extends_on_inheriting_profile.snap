@@ -1,0 +1,10 @@
+---
+source: tests/integration.rs
+assertion_line: 701
+expression: stdout
+---
+llama-server (alias: serve)
+  default-args: --host 0.0.0.0
+  profiles:
+    qwen-coder
+    qwen-coder-large (extends qwen-coder)

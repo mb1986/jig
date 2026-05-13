@@ -85,18 +85,23 @@ fn print_command(cmd: &Command) -> Result<()> {
         println!("  default-args: {line}");
     }
 
-    let profile_names: Vec<&str> = cmd
+    let profile_entries: Vec<(&str, Option<&str>)> = cmd
         .children
         .iter()
         .filter_map(|c| match c {
-            CommandChild::Profile { name, .. } => Some(name.as_str()),
+            CommandChild::Profile { name, extends, .. } => {
+                Some((name.as_str(), extends.as_ref().map(|(p, _)| p.as_str())))
+            }
             CommandChild::Default(_) => None,
         })
         .collect();
-    if !profile_names.is_empty() {
+    if !profile_entries.is_empty() {
         println!("  profiles:");
-        for name in profile_names {
-            println!("    {name}");
+        for (name, parent) in profile_entries {
+            match parent {
+                Some(p) => println!("    {name} (extends {p})"),
+                None => println!("    {name}"),
+            }
         }
     }
     Ok(())
