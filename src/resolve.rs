@@ -124,6 +124,22 @@ pub fn resolve(config: &Config, name: &str, profile: Option<&str>) -> Result<Res
         }
     }
 
+    // Step 5: group flag candidates by resolved CLI form, then
+    // compute the emission plan per key. The plan records, for each
+    // emitting source index, the value to use at that position;
+    // indices not present are suppressed (whether by collapse or by
+    // `#false`).
+    let mut by_key: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, (arg, _)) in candidates.iter().enumerate() {
+        if let Argument::Flag { key, .. } = arg {
+            by_key.entry(key.to_cli_flag()).or_default().push(i);
+        }
+    }
+    let mut emit_value: HashMap<usize, FlagValue> = HashMap::new();
+    for indices in by_key.values() {
+        plan_key(&candidates, indices, &mut emit_value);
+    }
+
     // Step 6: resolve env-var contributions on a parallel channel.
     // Tier ordering mirrors the argv side: defaults at tier 0, then
     // each ancestor's env in chain order, then the leaf's env.
@@ -142,22 +158,6 @@ pub fn resolve(config: &Config, name: &str, profile: Option<&str>) -> Result<Res
         per_tier_env.push(env_slice);
     }
     let env = resolve_env(&per_tier_env);
-
-    // Step 5: group flag candidates by resolved CLI form, then
-    // compute the emission plan per key. The plan records, for each
-    // emitting source index, the value to use at that position;
-    // indices not present are suppressed (whether by collapse or by
-    // `#false`).
-    let mut by_key: HashMap<String, Vec<usize>> = HashMap::new();
-    for (i, (arg, _)) in candidates.iter().enumerate() {
-        if let Argument::Flag { key, .. } = arg {
-            by_key.entry(key.to_cli_flag()).or_default().push(i);
-        }
-    }
-    let mut emit_value: HashMap<usize, FlagValue> = HashMap::new();
-    for indices in by_key.values() {
-        plan_key(&candidates, indices, &mut emit_value);
-    }
 
     // Assemble: positionals always emit; flags emit iff they appear
     // in the plan, taking the planned value (which is what makes
