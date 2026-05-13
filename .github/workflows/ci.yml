@@ -41,5 +41,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # Don't cache $CARGO_HOME/bin. The macos-latest runner ships
+      # `~/.cargo/bin/cargo` as a relative symlink to `rustup`, which
+      # is itself a symlink to /opt/homebrew/bin/rustup-init. When
+      # Swatinem restores a cache from a previous runner image, the
+      # symlinks get overwritten with state that no longer resolves
+      # on the current image, so `cargo test` ends up invoking
+      # `rustup-init` and fails with "unexpected argument 'test'".
+      # We don't `cargo install` anything in CI, so caching ~/.cargo/bin
+      # has no value anyway.
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
       - run: cargo test --all-targets --all-features
