@@ -4,6 +4,16 @@ function __jig_args
     commandline -opc
 end
 
+# Expand a leading `~/` or bare `~` in $argv[1] to $HOME. A captured
+# token (e.g. the value typed after `--config`) keeps `~` literal —
+# shells only expand `~` at parse time on unquoted words. Without
+# this, `jig --config ~/x.kdl --list-commands` fails to find the file
+# and completion silently returns no candidates. `~user/...` is left
+# alone — uncommon in practice and would require getent/dscacheutil.
+function __jig_expand_tilde
+    string replace -r '^~(?=/|$)' "$HOME" -- $argv[1]
+end
+
 # Echo `--config <PATH>` (or `--config=<PATH>`) extracted from the
 # current command line, so dynamic candidate calls reflect the
 # user-chosen config. Echoes nothing if the user did not pass one.
@@ -17,12 +27,12 @@ function __jig_config_args
             set -l next (math $i + 1)
             if test $next -le $n
                 echo "--config"
-                echo "$toks[$next]"
+                __jig_expand_tilde $toks[$next]
             end
             return
         end
         if string match -q -- "--config=*" $t
-            echo $t
+            echo "--config="(__jig_expand_tilde (string replace -- "--config=" "" $t))
             return
         end
         set i (math $i + 1)

@@ -1,3 +1,17 @@
+# Expand a leading `~/` or bare `~` in $1 to $HOME. A captured token
+# (e.g. the value typed after `--config`) keeps `~` literal because
+# shells only expand `~` at parse time on unquoted words. Without this,
+# `jig --config ~/x.kdl --list-commands` fails to find the file and
+# completion silently returns no candidates. `~user/...` is left
+# alone — uncommon in practice and would require getent/dscacheutil.
+_jig_expand_tilde() {
+    case "$1" in
+        "~")   printf '%s' "$HOME" ;;
+        "~/"*) printf '%s' "$HOME/${1#"~/"}" ;;
+        *)     printf '%s' "$1" ;;
+    esac
+}
+
 _jig() {
     local cur="${COMP_WORDS[COMP_CWORD]}"
     local prev="${COMP_WORDS[COMP_CWORD-1]}"
@@ -30,13 +44,17 @@ _jig() {
                     ;;
                 --config)
                     if (( i + 1 < COMP_CWORD )); then
-                        config_args=("--config" "${COMP_WORDS[$((i + 1))]}")
+                        local expanded
+                        expanded=$(_jig_expand_tilde "${COMP_WORDS[$((i + 1))]}")
+                        config_args=("--config" "$expanded")
                     fi
                     skip_next=1
                     continue
                     ;;
                 --config=*)
-                    config_args=("$w")
+                    local expanded
+                    expanded=$(_jig_expand_tilde "${w#--config=}")
+                    config_args=("--config=$expanded")
                     continue
                     ;;
                 --list-profiles|--completions)

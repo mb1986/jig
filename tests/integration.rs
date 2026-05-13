@@ -1328,6 +1328,216 @@ fn bash_completion_initial_hyphen_offers_jig_flags() {
     }
 }
 
+// --- tilde expansion in --config value (regression) ---
+//
+// Shells only expand `~` at parse time on unquoted words. The value
+// captured from the command line (zsh `$words`, bash `$COMP_WORDS`,
+// fish `commandline -opc`) keeps `~` literal, so the completion
+// scripts must re-expand before forwarding to jig. Without that,
+// `jig --config ~/cfg.kdl <TAB>` silently returns no candidates.
+
+// Mocks the state-machine far enough to enter the `command` branch,
+// then captures `config_args` from _jig's scope into TRACE via a
+// `_describe` stand-in (dynamic scoping makes the local visible).
+const ZSH_CAPTURE_DRIVER: &str = r#"
+typeset -ga TRACE
+_arguments() { state="command" }
+_describe()  { TRACE+=("${config_args[*]}") }
+_files()     { :; }
+source "$1"
+shift
+typeset -ga words=("$@")
+typeset -gi CURRENT=${#words[@]}
+TRACE=()
+_jig 2>/dev/null
+print -r -- "${TRACE[1]}"
+"#;
+
+fn zsh_captured_config_args(home: &str, words: &[&str]) -> String {
+    let script = std::env::current_dir()
+        .unwrap()
+        .join("src/completions/jig.zsh");
+    let mut cmd = std::process::Command::new("zsh");
+    cmd.env("HOME", home);
+    cmd.arg("-fc")
+        .arg(ZSH_CAPTURE_DRIVER)
+        .arg("driver")
+        .arg(&script);
+    for w in words {
+        cmd.arg(w);
+    }
+    let out = cmd.output().unwrap();
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+#[test]
+fn zsh_completion_expands_tilde_slash_in_config_value() {
+    if !shell_present("zsh") {
+        eprintln!("skipping: zsh not on PATH");
+        return;
+    }
+    let captured = zsh_captured_config_args("/fake/home", &["jig", "--config", "~/cfg.kdl", ""]);
+    assert_eq!(captured, "--config /fake/home/cfg.kdl");
+}
+
+#[test]
+fn zsh_completion_expands_tilde_slash_in_config_equals_value() {
+    if !shell_present("zsh") {
+        eprintln!("skipping: zsh not on PATH");
+        return;
+    }
+    let captured = zsh_captured_config_args("/fake/home", &["jig", "--config=~/cfg.kdl", ""]);
+    assert_eq!(captured, "--config=/fake/home/cfg.kdl");
+}
+
+#[test]
+fn zsh_completion_leaves_globs_in_config_value_literal() {
+    // Tilde expansion must not drag in glob expansion. A literal `*`
+    // in the path should reach jig unchanged (jig will then fail to
+    // open the file and the completion comes back empty, which is
+    // the same as today — but the path is forwarded verbatim).
+    if !shell_present("zsh") {
+        eprintln!("skipping: zsh not on PATH");
+        return;
+    }
+    let captured = zsh_captured_config_args("/fake/home", &["jig", "--config", "~/cfg/*.kdl", ""]);
+    assert_eq!(captured, "--config /fake/home/cfg/*.kdl");
+}
+
+// As `zsh_captured_config_args` but also returns whatever the driver
+// wrote to stderr — used to assert completion stays silent.
+fn zsh_captured_config_args_with_stderr(home: &str, words: &[&str]) -> (String, String) {
+    let script = std::env::current_dir()
+        .unwrap()
+        .join("src/completions/jig.zsh");
+    let mut cmd = std::process::Command::new("zsh");
+    cmd.env("HOME", home);
+    cmd.arg("-fc")
+        .arg(ZSH_CAPTURE_DRIVER)
+        .arg("driver")
+        .arg(&script);
+    for w in words {
+        cmd.arg(w);
+    }
+    let out = cmd.output().unwrap();
+    (
+        String::from_utf8(out.stdout).unwrap().trim().to_string(),
+        String::from_utf8(out.stderr).unwrap(),
+    )
+}
+
+#[test]
+fn zsh_completion_unknown_tilde_user_stays_literal_and_silent() {
+    // `${~var}` would expand `~typo_xyz/...` AND write "no such user"
+    // to stderr on unknown accounts — noisy during tab-completion.
+    // The script intentionally handles only `~/` and bare `~` to
+    // avoid that. Confirm the path passes through unchanged and
+    // nothing leaks to stderr.
+    if !shell_present("zsh") {
+        eprintln!("skipping: zsh not on PATH");
+        return;
+    }
+    let (captured, stderr) = zsh_captured_config_args_with_stderr(
+        "/fake/home",
+        &["jig", "--config", "~typo_xyz/x.kdl", ""],
+    );
+    assert_eq!(captured, "--config ~typo_xyz/x.kdl");
+    assert!(stderr.is_empty(), "expected silent stderr; got `{stderr}`");
+}
+
+// Drives _jig with a shell-function `jig` stand-in. The stand-in
+// encodes every arg it received (config_args followed by
+// --list-commands) into a single candidate token written to stdout,
+// which is what we then inspect via COMPREPLY.
+const BASH_CAPTURE_DRIVER: &str = r#"
+source "$1"
+shift
+jig() {
+    local out="" a
+    for a in "$@"; do
+        out+="${a//[[:space:]]/_}@"
+    done
+    echo "captured:${out}"
+}
+COMP_WORDS=("$@")
+COMP_CWORD=$(( ${#COMP_WORDS[@]} - 1 ))
+COMPREPLY=()
+_jig 2>/dev/null
+printf "%s\n" "${COMPREPLY[@]}"
+"#;
+
+fn bash_captured_config_args(home: &str, words: &[&str]) -> String {
+    let script = std::env::current_dir()
+        .unwrap()
+        .join("src/completions/jig.bash");
+    let mut cmd = std::process::Command::new("bash");
+    cmd.env("HOME", home);
+    cmd.arg("-c")
+        .arg(BASH_CAPTURE_DRIVER)
+        .arg("driver")
+        .arg(&script);
+    for w in words {
+        cmd.arg(w);
+    }
+    let out = cmd.output().unwrap();
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+#[test]
+fn bash_completion_expands_tilde_slash_in_config_value() {
+    if !shell_present("bash") {
+        eprintln!("skipping: bash not on PATH");
+        return;
+    }
+    let captured = bash_captured_config_args("/fake/home", &["jig", "--config", "~/cfg.kdl", ""]);
+    assert_eq!(
+        captured,
+        "captured:--config@/fake/home/cfg.kdl@--list-commands@"
+    );
+}
+
+#[test]
+fn bash_completion_expands_tilde_slash_in_config_equals_value() {
+    if !shell_present("bash") {
+        eprintln!("skipping: bash not on PATH");
+        return;
+    }
+    let captured = bash_captured_config_args("/fake/home", &["jig", "--config=~/cfg.kdl", ""]);
+    assert_eq!(
+        captured,
+        "captured:--config=/fake/home/cfg.kdl@--list-commands@"
+    );
+}
+
+#[test]
+fn bash_completion_leaves_globs_in_config_value_literal() {
+    // Mirror of the zsh glob test: a literal `*` in the path must
+    // reach jig unchanged, with no IFS word-splitting or globbing
+    // from the `compgen -W "$out"` round-trip.
+    if !shell_present("bash") {
+        eprintln!("skipping: bash not on PATH");
+        return;
+    }
+    let captured = bash_captured_config_args("/fake/home", &["jig", "--config", "~/cfg/*.kdl", ""]);
+    assert_eq!(
+        captured,
+        "captured:--config@/fake/home/cfg/*.kdl@--list-commands@"
+    );
+}
+
+#[test]
+fn bash_completion_passes_absolute_config_path_through_unchanged() {
+    // Exercise the `*) printf '%s' "$1"` fallback in _jig_expand_tilde:
+    // a path without a leading `~` must not be rewritten.
+    if !shell_present("bash") {
+        eprintln!("skipping: bash not on PATH");
+        return;
+    }
+    let captured =
+        bash_captured_config_args("/fake/home", &["jig", "--config", "/etc/jig.kdl", ""]);
+    assert_eq!(captured, "captured:--config@/etc/jig.kdl@--list-commands@");
+}
+
 #[test]
 fn dry_run_value_with_embedded_nul_byte_exits_125() {
     // A NUL byte cannot be shell-quoted, so --dry-run should refuse

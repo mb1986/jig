@@ -1,5 +1,21 @@
 #compdef jig
 
+# Expand a leading `~/` or bare `~` in $1 to $HOME. A captured token
+# (e.g. the value typed after `--config`) keeps `~` literal — shells
+# only expand `~` at parse time on unquoted words, never on values
+# pulled from a variable. Without this, `jig --config ~/x.kdl
+# --list-commands` fails to find the file and completion silently
+# returns no candidates. `~user/...` is intentionally left alone:
+# zsh's built-in `${~var}` would handle it, but on an unknown user
+# it also writes "no such user" to stderr — noisy during tab.
+_jig_expand_tilde() {
+    case "$1" in
+        "~")   print -rn -- "$HOME" ;;
+        "~/"*) print -rn -- "$HOME/${1#"~/"}" ;;
+        *)     print -rn -- "$1" ;;
+    esac
+}
+
 _jig() {
     typeset -A opt_args
     local context curcontext="$curcontext" state state_descr line
@@ -25,13 +41,13 @@ _jig() {
             fi
             if [[ "$word" == "--config" ]]; then
                 if (( i + 1 < CURRENT )); then
-                    config_args=("--config" "${words[$((i + 1))]}")
+                    config_args=("--config" "$(_jig_expand_tilde "${words[$((i + 1))]}")")
                 fi
                 skip_next=1
                 continue
             fi
             if [[ "$word" == --config=* ]]; then
-                config_args=("$word")
+                config_args=("--config=$(_jig_expand_tilde "${word#--config=}")")
                 continue
             fi
             if [[ "$word" == "--list-profiles" || "$word" == "--completions" ]]; then
