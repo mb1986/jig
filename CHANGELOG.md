@@ -22,11 +22,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the resolved command when no value is supplied. The `+` append
   marker on a `#null` is rejected at parse time.
 
+### Changed
+
+- A flag whose value is the KDL keyword `#null` is now interpreted
+  per SPEC §2.4.3 (see the Added entry). In v0.6.x and earlier the
+  same syntax fell through the generic value path and emitted as
+  the literal four-character string `#null` on argv. Configs that
+  relied on that behaviour (rare — `#null` would have been an odd
+  value to pass) should switch to the quoted form `"#null"` to
+  preserve the literal-string semantics, per the §2.4.1 convention.
+
 ### Migration note
 
 - If you used `a #false` in defaults expecting it to reserve a
   position for a profile to fill in (the v0.2.0 behavior), use
-  `a #null` in 0.6.1+. The `#false` behavior is unchanged from
+  `a #null` in 0.7.0+. The `#false` behavior is unchanged from
   v0.3.0+: it remains a "remove this flag" marker that drops the
   occurrence including its position. `#null` is the dedicated
   placeholder tool.

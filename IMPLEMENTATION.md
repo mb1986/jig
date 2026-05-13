@@ -148,8 +148,13 @@ enum FlagKey {
 enum FlagValue {
     /// Boolean keyword `#true` or `#false` from KDL. Drives include/suppress.
     Bool(bool),
-    /// Any non-boolean value: strings, integers, floats. Stored as the
-    /// textual representation that should appear on the command line, so
+    /// The KDL `#null` keyword. Position-only placeholder (`SPEC.md` §2.4.3):
+    /// declares the flag at this source position but contributes no value,
+    /// suppresses nothing, never emits. Its idx feeds the first-occurrence
+    /// pool in the per-key merge (`SPEC.md` §2.8 step 2.4 / §2.8.5 step 4).
+    Null,
+    /// Any non-boolean, non-null value: strings, integers, floats. Stored as
+    /// the textual representation that should appear on the command line, so
     /// no precision/rounding concerns and no need to round-trip numeric types.
     Literal(String),
 }

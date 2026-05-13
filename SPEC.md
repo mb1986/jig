@@ -121,9 +121,9 @@ A flag whose value is the KDL keyword `#null` is a **position-only placeholder**
 
 - It declares the flag at this source position but contributes no value.
 - It is never emitted on the resolved command line (no `-a #null` literal in argv).
-- It does not suppress anything (unlike `#false`); a default-side `#null` does not clear lower tiers, and a profile-side `#null` does not override a default's value.
+- It does not suppress anything (unlike `#false`); a `#null` at any tier does not clear other tiers' entries for the same key, and a profile-side `#null` does not override a default's value.
 - It is not a survivor for mode selection (a `#null` in repeat-mode candidates does not push the side over the multiplicity threshold).
-- Its **source position** is retained for the first-occurrence rule (§2.8 step 2.4 / §2.8.5 step 4). When a later survivor of the same key emits in single mode, it emits at the earliest of the survivor's idx and any `#null` ghost idx.
+- Its **source position** is retained for the first-occurrence rule (§2.8 step 2.4 / §2.8.5 step 4). When the per-key merge emits in single mode, the merged occurrence sits at the earliest source index among the surviving unmarked candidates and any `#null` ghosts for the same key.
 
 Typical use: declare command-level documentation — list every flag the command supports at canonical positions — and let profiles supply the actual values:
 

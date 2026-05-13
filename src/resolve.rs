@@ -2144,6 +2144,41 @@ mod tests {
     }
 
     #[test]
+    fn null_ghost_does_not_move_marked_entry_position() {
+        // A `+`-marked profile entry always emits at its own
+        // source position. A `#null` ghost in defaults must not
+        // pull a marked entry into the ghost's slot — markers are
+        // outside the single-mode collapse.
+        let cfg = parse(
+            r#"foo {
+                a #null
+                proj { +a "/extra" }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("proj")).unwrap();
+        // The `+`-marked entry is at candidate idx 1 (after the
+        // tier-0 ghost at idx 0). It emits at idx 1, not idx 0.
+        // Output order from a single-flag config is just `-a /extra`.
+        assert_eq!(flatten(&r), vec![("-a".into(), "/extra".into())]);
+    }
+
+    #[test]
+    fn null_in_unselected_sibling_profile_does_not_leak() {
+        // A `#null` in a profile that isn't selected contributes
+        // nothing to the candidate list; only the chain's profiles
+        // (and defaults) are walked.
+        let cfg = parse(
+            r#"foo {
+                a "x"
+                other { a #null }
+                p {}
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("p")).unwrap();
+        assert_eq!(flatten(&r), vec![("-a".into(), "x".into())]);
+    }
+
+    #[test]
     fn null_with_profile_false_at_higher_tier_clears_ghost() {
         // Profile-side `#false` triggers the T-cascade: every entry
         // at tier < T is dropped, including `#null` ghosts. With
