@@ -246,10 +246,22 @@ fn parse_argument(node: &KdlNode, src: &NamedSource<String>) -> Result<Argument>
             } else {
                 (FlagMode::Plain, raw)
             };
+            let value = flag_value(entry);
+            // §2.4.3: `#null` is a position-only placeholder that
+            // never emits. Combining it with the `+` marker (which
+            // requests a separate own-position emission) is
+            // meaningless; reject so the user is steered toward
+            // either dropping the marker or using a real value.
+            if mode == FlagMode::Append && matches!(value, FlagValue::Null) {
+                return Err(Error::NullWithAppendMarker {
+                    src: src.clone(),
+                    span: node.name().span(),
+                });
+            }
             Ok(Argument::Flag {
                 key: classify_flag_key(key_text),
                 key_span: node.name().span(),
-                value: flag_value(entry),
+                value,
                 mode,
             })
         }
@@ -368,8 +380,9 @@ fn classify_flag_key(raw: &str) -> FlagKey {
 fn flag_value(entry: &KdlEntry) -> FlagValue {
     match entry.value() {
         KdlValue::Bool(b) => FlagValue::Bool(*b),
+        KdlValue::Null => FlagValue::Null,
         KdlValue::String(s) => FlagValue::Literal(s.clone()),
-        // For Integer / Float / Null, prefer the original source
+        // For Integer / Float, prefer the original source
         // representation (e.g. `0.5` round-trips exactly) when the
         // entry preserved it; otherwise fall back to `Display`,
         // which produces canonical KDL form. See IMPLEMENTATION.md
@@ -932,6 +945,43 @@ mod tests {
         assert!(matches!(&args[0], Argument::Flag { .. }));
         assert!(matches!(&args[1], Argument::Flag { .. }));
         assert!(matches!(args[2], Argument::Positional(_)));
+    }
+
+    // --- §2.4.3 `#null` placeholder ---
+
+    #[test]
+    fn null_value_parses_as_flag_value_null() {
+        let cfg = parse(r"foo { a #null }").unwrap();
+        let CommandChild::Default(Argument::Flag { value, .. }) = &cfg.commands[0].children[0]
+        else {
+            panic!("expected default flag");
+        };
+        assert_eq!(*value, FlagValue::Null);
+    }
+
+    #[test]
+    fn quoted_hash_null_is_literal_string_not_placeholder() {
+        // §2.4.1's boolean-vs-string distinction extends to null:
+        // `"#null"` is a literal string value, not the `#null` keyword.
+        let cfg = parse("foo { a \"#null\" }").unwrap();
+        let CommandChild::Default(Argument::Flag { value, .. }) = &cfg.commands[0].children[0]
+        else {
+            panic!("expected default flag");
+        };
+        assert_eq!(*value, FlagValue::Literal("#null".to_string()));
+    }
+
+    #[test]
+    fn null_with_append_marker_rejected() {
+        let err = parse(r"foo { +a #null }").unwrap_err();
+        assert!(matches!(err, Error::NullWithAppendMarker { .. }));
+    }
+
+    #[test]
+    fn null_without_marker_accepted() {
+        // Sanity-check the negative test above: plain `a #null` is
+        // fine; only `+a #null` is the rejected combination.
+        parse(r"foo { a #null }").unwrap();
     }
 
     // --- §2.8.5 `extends` property on profile nodes ---

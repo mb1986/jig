@@ -33,9 +33,12 @@ fn args_to_tokens(args: &[Argument]) -> Vec<String> {
                 ..
             } => tokens.push(key.to_cli_flag()),
             Argument::Flag {
-                value: FlagValue::Bool(false),
+                value: FlagValue::Bool(false) | FlagValue::Null,
                 ..
-            } => {}
+            } => {
+                // `#false` and `#null` never emit. Resolve already
+                // drops them; defensive no-op here.
+            }
             Argument::Flag {
                 key,
                 value: FlagValue::Literal(s),
@@ -81,10 +84,11 @@ pub fn to_argv(args: &[Argument], passthrough: &[OsString]) -> Vec<OsString> {
                 ..
             } => out.push(OsString::from(key.to_cli_flag())),
             Argument::Flag {
-                value: FlagValue::Bool(false),
+                value: FlagValue::Bool(false) | FlagValue::Null,
                 ..
             } => {
-                // Resolve already drops these; defensive no-op.
+                // `#false` and `#null` never emit. Resolve already
+                // drops them; defensive no-op here.
             }
             Argument::Flag {
                 key,

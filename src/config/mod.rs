@@ -145,17 +145,25 @@ impl FlagKey {
 }
 
 /// Flag value, distinguishing the KDL boolean keyword `#true`/`#false`
-/// (which control include/suppress) from any other literal value.
-/// Per `SPEC.md` §2.4.1.
+/// (which control include/suppress), the `#null` placeholder (which
+/// declares a position without emitting), and any other literal value.
+/// Per `SPEC.md` §2.4.1 and §2.4.3.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FlagValue {
     /// The KDL boolean keyword. `true` → emit the flag with no
     /// value; `false` → suppress the flag entirely.
     Bool(bool),
-    /// Any non-boolean value, stored as the textual representation
-    /// that should appear on the command line. We keep the original
-    /// source text rather than parsed numeric form to avoid
-    /// precision loss on floats and integer-vs-float ambiguity.
+    /// The KDL `#null` keyword. A "ghost" placeholder that declares
+    /// the flag at this source position but contributes no value,
+    /// triggers no suppression, and is never emitted. Its source
+    /// position is retained for the first-appearance rule in the
+    /// per-key merge (`SPEC.md` §2.4.3 / §2.8 / §2.8.5).
+    Null,
+    /// Any non-boolean, non-null value, stored as the textual
+    /// representation that should appear on the command line. We
+    /// keep the original source text rather than parsed numeric
+    /// form to avoid precision loss on floats and integer-vs-float
+    /// ambiguity.
     Literal(String),
 }
 

@@ -476,6 +476,60 @@ fn extends_cycle_exits_125_with_cycle_path() {
 }
 
 #[test]
+fn dry_run_null_default_filled_by_profile_emits_at_default_position() {
+    // §2.4.3 placeholder pattern end-to-end: `a #null` reserves
+    // idx 0; the profile fills in the value; the merged occurrence
+    // emits at the default's slot before `-b 123`.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "command {\n    a #null\n    b 123\n\n    profile {\n        a 000\n    }\n}\n",
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--dry-run")
+        .arg("command")
+        .arg("profile")
+        .assert()
+        .code(0)
+        .stdout("command -a 000 -b 123\n");
+}
+
+#[test]
+fn dry_run_null_default_alone_omits_flag() {
+    // §2.4.3: with no profile filling in the placeholder, the flag
+    // does not emit. The placeholder is structural-only.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "command {\n    a #null\n    b 123\n}\n",
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--dry-run")
+        .arg("command")
+        .assert()
+        .code(0)
+        .stdout("command -b 123\n");
+}
+
+#[test]
+fn null_with_append_marker_exits_125() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "foo {\n    +a #null\n}\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("foo")
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains(
+            "`+` append marker is not allowed on a `#null`",
+        ));
+}
+
+#[test]
 fn dry_run_for_spec_5_1_llama_server() {
     let dir = tempdir().unwrap();
     fs::write(

@@ -280,7 +280,10 @@ fn plan_key(
     // Suppression. The highest tier (T > 0) carrying a `#false` for
     // this key clears every entry at tiers `< T`; in addition every
     // `#false` entry is dropped, regardless of tier. A `#false` at
-    // tier 0 alone clears only itself.
+    // tier 0 alone clears only itself. `#null` placeholders
+    // (§2.4.3) are never survivors — they have no value to emit and
+    // do not trigger suppression — but their source positions feed
+    // the single-mode position pool below.
     let max_false_tier: Option<usize> = entries
         .iter()
         .filter(|e| e.tier > 0 && matches!(e.value, FlagValue::Bool(false)))
@@ -289,7 +292,7 @@ fn plan_key(
     let surviving: Vec<&Entry<'_>> = entries
         .iter()
         .filter(|e| {
-            if matches!(e.value, FlagValue::Bool(false)) {
+            if matches!(e.value, FlagValue::Bool(false) | FlagValue::Null) {
                 return false;
             }
             if let Some(t) = max_false_tier
@@ -302,7 +305,8 @@ fn plan_key(
         .collect();
 
     // Marked entries always emit at their own position, regardless
-    // of unmarked-side mode.
+    // of unmarked-side mode. `#null` is rejected by the parser
+    // when combined with `+`, so a marked survivor is never null.
     for e in surviving.iter().filter(|e| e.mode == FlagMode::Append) {
         emit_value.insert(e.idx, e.value.clone());
     }
@@ -327,16 +331,20 @@ fn plan_key(
 
     if single_mode {
         // Emit one occurrence: at the earliest source index across
-        // all unmarked survivors, with the value from the
-        // highest-tier survivor. For N=2 with defaults walked
-        // before the profile this coincides with §2.8.1's
-        // "default's index if present, else profile's"; for N ≥ 3
-        // (or for 2-tier configs where the profile precedes its
-        // overriding default in source order) "earliest source
-        // index" is the spec-correct generalisation.
+        // all unmarked survivors AND any `#null` ghosts that
+        // weren't cleared by the T-cascade. Per §2.4.3, a `#null`
+        // contributes only its source position to the first-
+        // occurrence pool; it never supplies a value. Value comes
+        // from the highest-tier survivor.
+        let ghost_idxs = entries
+            .iter()
+            .filter(|e| matches!(e.value, FlagValue::Null))
+            .filter(|e| max_false_tier.is_none_or(|t| e.tier >= t))
+            .map(|e| e.idx);
         let pos_idx = unmarked
             .iter()
             .map(|e| e.idx)
+            .chain(ghost_idxs)
             .min()
             .expect("invariant: unmarked is non-empty");
         let value = unmarked
@@ -524,6 +532,7 @@ mod tests {
                     let v = match value {
                         FlagValue::Bool(true) => String::new(),
                         FlagValue::Bool(false) => "<#false>".to_string(),
+                        FlagValue::Null => "<#null>".to_string(),
                         FlagValue::Literal(s) => s.clone(),
                     };
                     (key.to_cli_flag(), v)
@@ -1980,5 +1989,173 @@ mod tests {
                 ("-z".into(), "from-child".into()),
             ]
         );
+    }
+
+    // --- §2.4.3 `#null` placeholder ---
+
+    #[test]
+    fn null_default_alone_emits_nothing() {
+        // `a #null` declares the flag at idx 0 but contributes no
+        // value. With no profile filling it in, the flag does not
+        // emit.
+        let cfg = parse(
+            r"foo {
+                a #null
+                b 123
+            }",
+        );
+        let r = resolve(&cfg, "foo", None).unwrap();
+        assert_eq!(flatten(&r), vec![("-b".into(), "123".into())]);
+    }
+
+    #[test]
+    fn null_default_filled_by_profile_emits_at_default_position() {
+        // The canonical placeholder pattern: declare the flag at the
+        // command level with `#null`, let a profile supply the value,
+        // emit at the default's slot.
+        let cfg = parse(
+            r#"foo {
+                a #null
+                b 123
+                p { a "x" }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("p")).unwrap();
+        assert_eq!(
+            flatten(&r),
+            vec![("-a".into(), "x".into()), ("-b".into(), "123".into())]
+        );
+    }
+
+    #[test]
+    fn null_default_after_value_default_keeps_first_position() {
+        // The earlier of two same-key default occurrences wins the
+        // position. `a "x"; a #null` puts the position at idx 0
+        // regardless of which side later supplies the value.
+        let cfg = parse(
+            r#"foo {
+                a "x"
+                a #null
+                p { a "y" }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("p")).unwrap();
+        // Tier 0 has one survivor (`"x"` at idx 0). Tier 1 has one
+        // survivor (`"y"` at idx 2). The `#null` at idx 1 is a ghost.
+        // Single mode: earliest survivor idx is 0, highest-tier
+        // value is `"y"`. Emit at idx 0 with `"y"`.
+        assert_eq!(flatten(&r), vec![("-a".into(), "y".into())]);
+    }
+
+    #[test]
+    fn null_in_profile_alone_emits_nothing() {
+        // A profile-only `#null` has no value to emit. The flag
+        // never appears.
+        let cfg = parse(
+            r"foo {
+                p { a #null }
+            }",
+        );
+        let r = resolve(&cfg, "foo", Some("p")).unwrap();
+        assert_eq!(flatten(&r), Vec::<(String, String)>::new());
+    }
+
+    #[test]
+    fn value_default_with_null_profile_keeps_default_value() {
+        // Profile-side `#null` is a no-op for value selection; it
+        // doesn't override or suppress the default.
+        let cfg = parse(
+            r#"foo {
+                a "x"
+                p { a #null }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("p")).unwrap();
+        assert_eq!(flatten(&r), vec![("-a".into(), "x".into())]);
+    }
+
+    #[test]
+    fn null_does_not_trigger_repeat_mode() {
+        // Two unmarked defaults plus a profile `#null` is still
+        // mode-selected on the two defaults: repeat mode emits each
+        // default occurrence, the null contributes nothing.
+        let cfg = parse(
+            r#"foo {
+                a "x"
+                a "y"
+                p { a #null }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("p")).unwrap();
+        assert_eq!(
+            flatten(&r),
+            vec![("-a".into(), "x".into()), ("-a".into(), "y".into())]
+        );
+    }
+
+    #[test]
+    fn null_does_not_clear_other_defaults() {
+        // Unlike profile-side `#false`, profile-side `#null` does
+        // not clear lower-tier entries of the same key.
+        let cfg = parse(
+            r#"foo {
+                a "x"
+                a "y"
+                bare { a #null }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("bare")).unwrap();
+        assert_eq!(
+            flatten(&r),
+            vec![("-a".into(), "x".into()), ("-a".into(), "y".into())]
+        );
+    }
+
+    #[test]
+    fn null_inheritance_default_ghost_with_chain_value_at_default_position() {
+        // `a #null` in defaults reserves idx 0; parent supplies the
+        // value at tier 1; child inherits unchanged. Single mode
+        // emits at idx 0 (earliest ghost-or-survivor) with parent's
+        // value.
+        let cfg = parse(
+            r#"foo {
+                a #null
+                parent { a "p" }
+                child extends="parent" {}
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        assert_eq!(flatten(&r), vec![("-a".into(), "p".into())]);
+    }
+
+    #[test]
+    fn null_inheritance_leaf_ghost_with_default_value_keeps_default() {
+        // A leaf `#null` is a no-op; the highest non-null tier
+        // (defaults here) supplies the value.
+        let cfg = parse(
+            r#"foo {
+                a "x"
+                parent {}
+                child extends="parent" { a #null }
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        assert_eq!(flatten(&r), vec![("-a".into(), "x".into())]);
+    }
+
+    #[test]
+    fn null_with_profile_false_at_higher_tier_clears_ghost() {
+        // Profile-side `#false` triggers the T-cascade: every entry
+        // at tier < T is dropped, including `#null` ghosts. With
+        // nothing surviving above T (the #false itself doesn't
+        // survive), no emission.
+        let cfg = parse(
+            r"foo {
+                a #null
+                bare { a #false }
+            }",
+        );
+        let r = resolve(&cfg, "foo", Some("bare")).unwrap();
+        assert_eq!(flatten(&r), Vec::<(String, String)>::new());
     }
 }

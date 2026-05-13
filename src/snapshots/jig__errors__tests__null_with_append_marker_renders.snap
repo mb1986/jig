@@ -1,0 +1,14 @@
+---
+source: src/errors.rs
+assertion_line: 927
+expression: render_for_snapshot(&err)
+---
+  × the `+` append marker is not allowed on a `#null` placeholder
+   ╭─[jig.kdl:2:3]
+ 1 │ foo {
+ 2 │   +a #null
+   ·   ─┬
+   ·    ╰── `+` on `#null` placeholder
+ 3 │ }
+   ╰────
+  help: `#null` declares a position without emitting; the `+` marker has nothing to emit separately. Drop the `+`, or use a real value (or `#false`) if you wanted suppression

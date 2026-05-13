@@ -166,6 +166,23 @@ pub enum Error {
         span: SourceSpan,
     },
 
+    /// A flag node was written as `+key #null`. The `+` append marker
+    /// asks for a separate own-position emission, but `#null` is a
+    /// position-only placeholder that never emits — combining them is
+    /// meaningless. Per `SPEC.md` §2.4.3 / §2.5.
+    #[error("the `+` append marker is not allowed on a `#null` placeholder")]
+    #[diagnostic(help(
+        "`#null` declares a position without emitting; the `+` marker has nothing to emit separately. Drop the `+`, or use a real value (or `#false`) if you wanted suppression"
+    ))]
+    NullWithAppendMarker {
+        /// Source the span points into.
+        #[source_code]
+        src: NamedSource<String>,
+        /// Span of the offending node name.
+        #[label("`+` on `#null` placeholder")]
+        span: SourceSpan,
+    },
+
     /// A flag node was written as `+key value` with `key` empty
     /// after the marker is stripped. The `+` alone is not a valid
     /// flag key.
@@ -627,6 +644,7 @@ impl Error {
             | Self::ExpectedString { .. }
             | Self::LeadingDashName { .. }
             | Self::LeadingPlusName { .. }
+            | Self::NullWithAppendMarker { .. }
             | Self::EmptyKeyAfterMarker { .. }
             | Self::UnknownTypeAnnotation { .. }
             | Self::EnvOnNodeWithChildren { .. }
@@ -895,6 +913,16 @@ mod tests {
         let err = Error::EnvInvalidValue {
             src,
             span: SourceSpan::from((15, 5)),
+        };
+        insta::assert_snapshot!(render_for_snapshot(&err));
+    }
+
+    #[test]
+    fn null_with_append_marker_renders() {
+        let src = NamedSource::new("jig.kdl", "foo {\n  +a #null\n}\n".to_string());
+        let err = Error::NullWithAppendMarker {
+            src,
+            span: SourceSpan::from((8, 2)),
         };
         insta::assert_snapshot!(render_for_snapshot(&err));
     }
