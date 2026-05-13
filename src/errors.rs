@@ -431,6 +431,55 @@ pub enum Error {
         second: SourceSpan,
     },
 
+    /// A profile's `extends="<parent>"` names a profile that does not
+    /// exist in the same command. Per `SPEC.md` §2.8.5 / §2.9, the
+    /// parent must be a defined profile within the same command;
+    /// cross-command inheritance is not supported in v1.
+    #[error("profile {profile:?} extends unknown profile {parent:?} in command {command:?}")]
+    ProfileExtendsUnknownParent {
+        /// The child profile whose `extends` was unresolved.
+        profile: String,
+        /// The parent name as written in the `extends` value.
+        parent: String,
+        /// The owning command.
+        command: String,
+        /// Source the span points into.
+        #[source_code]
+        src: NamedSource<String>,
+        /// Span of the offending `extends=` value entry.
+        #[label("not a profile in this command")]
+        span: SourceSpan,
+        /// Pre-formatted help listing the available sibling profile
+        /// names and an optional did-you-mean suggestion.
+        #[help]
+        help: String,
+    },
+
+    /// The inheritance graph for one command contains a cycle. Per
+    /// `SPEC.md` §2.8.5, the `extends` relation must be acyclic so
+    /// resolution terminates. The `cycle` field lists profile names
+    /// in order with the first name repeated at the end (e.g.
+    /// `["A", "B", "A"]` for the two-cycle `A → B → A`); `spans`
+    /// holds one `extends=` source span per edge on the cycle.
+    #[error("profile inheritance cycle in command {command:?}: {}", cycle.join(" → "))]
+    #[diagnostic(help(
+        "break the cycle by removing one of the `extends=` pointers or pointing it at a non-cyclic profile"
+    ))]
+    ProfileInheritanceCycle {
+        /// The owning command.
+        command: String,
+        /// Profile names on the cycle, with the start repeated at the
+        /// end for readability (e.g. `["A","B","A"]`).
+        cycle: Vec<String>,
+        /// Source the spans point into.
+        #[source_code]
+        src: NamedSource<String>,
+        /// One source span per edge on the cycle, in the same order
+        /// as `cycle[..cycle.len()-1]`'s outgoing `extends=` values.
+        #[label(collection, "on the cycle")]
+        spans: Vec<SourceSpan>,
+    },
+
     /// Two profiles within the same command share a name. Per
     /// `SPEC.md` §2.9.
     #[error("profile {name:?} is defined more than once in command {command:?}")]
@@ -593,6 +642,8 @@ impl Error {
             | Self::UnsupportedPropertyOnProfile { .. }
             | Self::ProfileExtendsBadValue { .. }
             | Self::DuplicateProfileExtends { .. }
+            | Self::ProfileExtendsUnknownParent { .. }
+            | Self::ProfileInheritanceCycle { .. }
             | Self::DuplicateProfile { .. }
             | Self::UnknownCommand { .. }
             | Self::AmbiguousCommand { .. }
@@ -925,6 +976,36 @@ mod tests {
             src,
             first: SourceSpan::from((14, 11)),
             second: SourceSpan::from((26, 11)),
+        };
+        insta::assert_snapshot!(render_for_snapshot(&err));
+    }
+
+    #[test]
+    fn profile_extends_unknown_parent_renders() {
+        let err = Error::ProfileExtendsUnknownParent {
+            profile: "child".to_string(),
+            parent: "paren".to_string(),
+            command: "foo".to_string(),
+            src: NamedSource::new(
+                "jig.kdl",
+                "foo {\n  parent {}\n  child extends=\"paren\" {}\n}\n".to_string(),
+            ),
+            span: SourceSpan::from((36, 7)),
+            help: "available profiles: parent, child\ndid you mean \"parent\"?".to_string(),
+        };
+        insta::assert_snapshot!(render_for_snapshot(&err));
+    }
+
+    #[test]
+    fn profile_inheritance_cycle_renders() {
+        let err = Error::ProfileInheritanceCycle {
+            command: "foo".to_string(),
+            cycle: vec!["a".to_string(), "b".to_string(), "a".to_string()],
+            src: NamedSource::new(
+                "jig.kdl",
+                "foo {\n  a extends=\"b\" {}\n  b extends=\"a\" {}\n}\n".to_string(),
+            ),
+            spans: vec![SourceSpan::from((18, 3)), SourceSpan::from((36, 3))],
         };
         insta::assert_snapshot!(render_for_snapshot(&err));
     }

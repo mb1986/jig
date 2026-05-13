@@ -1,0 +1,15 @@
+---
+source: src/errors.rs
+assertion_line: 996
+expression: render_for_snapshot(&err)
+---
+  × profile "child" extends unknown profile "paren" in command "foo"
+   ╭─[jig.kdl:3:19]
+ 2 │   parent {}
+ 3 │   child extends="paren" {}
+   ·                   ───┬───
+   ·                      ╰── not a profile in this command
+ 4 │ }
+   ╰────
+  help: available profiles: parent, child
+        did you mean "parent"?

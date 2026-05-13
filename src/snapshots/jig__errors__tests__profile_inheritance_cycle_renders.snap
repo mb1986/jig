@@ -1,0 +1,17 @@
+---
+source: src/errors.rs
+assertion_line: 1010
+expression: render_for_snapshot(&err)
+---
+  × profile inheritance cycle in command "foo": a → b → a
+   ╭─[jig.kdl:2:13]
+ 1 │ foo {
+ 2 │   a extends="b" {}
+   ·             ─┬─
+   ·              ╰── on the cycle
+ 3 │   b extends="a" {}
+   ·            ─┬─
+   ·             ╰── on the cycle
+ 4 │ }
+   ╰────
+  help: break the cycle by removing one of the `extends=` pointers or pointing it at a non-cyclic profile

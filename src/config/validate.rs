@@ -14,6 +14,9 @@
 //!   that name is unique). A duplicated command name may not be
 //!   used as an alias anywhere.
 //! - Profile names must be unique within a command.
+//! - A profile's `extends="<parent>"` (`SPEC.md` §2.8.5) must
+//!   reference a defined profile within the same command, and the
+//!   inheritance graph must be acyclic.
 //!
 //! Repeated flag keys within a scope are *allowed*; the resolver
 //! distinguishes single-mode vs repeat-mode merge per `SPEC.md` §2.8
@@ -22,12 +25,13 @@
 //! On the first violation found we return an [`Error`] carrying the
 //! relevant source spans for two-span diagnostics per §7.4.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use miette::{NamedSource, SourceSpan};
 
 use super::{CommandChild, Config, EnvEntry};
 use crate::errors::{Error, Result};
+use crate::suggest::{build_help, nearest};
 
 /// Validate `config` against `SPEC.md` §2.9. `src` is attached to
 /// any returned diagnostic so spans render against the right file.
@@ -40,6 +44,7 @@ pub fn validate(config: &Config, src: &NamedSource<String>) -> Result<()> {
     check_reserved_name_prefixes(config, src)?;
     check_command_and_alias_names(config, src)?;
     check_profiles_within_each_command(config, src)?;
+    check_profile_inheritance(config, src)?;
     check_env_declarations(config, src)?;
     Ok(())
 }
@@ -214,6 +219,139 @@ fn check_profiles_within_each_command(config: &Config, src: &NamedSource<String>
                 seen.insert(name, *name_span);
             }
         }
+    }
+    Ok(())
+}
+
+/// Per `SPEC.md` §2.8.5 / §2.9: every `extends="<parent>"` pointer on
+/// a profile must name a defined profile within the same command,
+/// and the inheritance graph (the per-command digraph induced by
+/// `extends`) must be acyclic.
+///
+/// Reports the first violation found. Unknown-parent diagnostics
+/// include a did-you-mean suggestion over sibling profile names.
+/// Cycle diagnostics list the cycle path (with the start repeated
+/// at the end) and label every `extends=` site on the cycle.
+fn check_profile_inheritance(config: &Config, src: &NamedSource<String>) -> Result<()> {
+    for cmd in &config.commands {
+        // Map sibling profile name → (extends-target, extends-value-span).
+        // Profile-name uniqueness has already been enforced upstream,
+        // so the first occurrence of any name is also the only one.
+        let mut profile_extends: HashMap<&str, Option<(&str, SourceSpan)>> = HashMap::new();
+        for child in &cmd.children {
+            if let CommandChild::Profile { name, extends, .. } = child {
+                let entry = extends
+                    .as_ref()
+                    .map(|(parent, span)| (parent.as_str(), *span));
+                profile_extends.insert(name.as_str(), entry);
+            }
+        }
+        let sibling_names: Vec<&str> = profile_extends.keys().copied().collect();
+
+        // Memoise profiles whose chain is known to terminate cleanly,
+        // so repeated walks don't re-traverse the same suffix.
+        let mut clean: HashSet<&str> = HashSet::new();
+        for child in &cmd.children {
+            let CommandChild::Profile { name, .. } = child else {
+                continue;
+            };
+            if clean.contains(name.as_str()) {
+                continue;
+            }
+            walk_inheritance(
+                cmd.name.as_str(),
+                name.as_str(),
+                &profile_extends,
+                &sibling_names,
+                &mut clean,
+                src,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Walk the `extends` chain starting from `start` within one command.
+/// Returns `Ok(())` if the chain terminates without a cycle and every
+/// `extends=` target resolves to a defined sibling profile.
+fn walk_inheritance<'a>(
+    command: &str,
+    start: &'a str,
+    profile_extends: &HashMap<&'a str, Option<(&'a str, SourceSpan)>>,
+    sibling_names: &[&'a str],
+    clean: &mut HashSet<&'a str>,
+    src: &NamedSource<String>,
+) -> Result<()> {
+    let mut chain: Vec<&str> = Vec::new();
+    let mut in_chain: HashSet<&str> = HashSet::new();
+    let mut current: &str = start;
+    loop {
+        if clean.contains(current) {
+            // The remainder of this chain has already been validated.
+            break;
+        }
+        if in_chain.contains(current) {
+            // Cycle. Slice the chain at the first occurrence of
+            // `current` to drop any non-cyclic prefix (e.g. `X` in
+            // `X → Y → Z → Y`).
+            let start_idx = chain
+                .iter()
+                .position(|n| *n == current)
+                .expect("invariant: in_chain ⇒ chain contains it");
+            let mut cycle: Vec<String> = chain[start_idx..]
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect();
+            // Repeat the start at the end for readable rendering.
+            cycle.push(current.to_string());
+            // One `extends=` span per edge on the cycle. Each
+            // edge originates at cycle[i] and points at cycle[i+1].
+            let spans: Vec<SourceSpan> = chain[start_idx..]
+                .iter()
+                .map(|n| {
+                    profile_extends
+                        .get(n)
+                        .copied()
+                        .flatten()
+                        .map(|(_, sp)| sp)
+                        .expect("invariant: profile on cycle has an `extends` span")
+                })
+                .collect();
+            return Err(Error::ProfileInheritanceCycle {
+                command: command.to_string(),
+                cycle,
+                src: src.clone(),
+                spans,
+            });
+        }
+        chain.push(current);
+        in_chain.insert(current);
+        let Some(extends_entry) = profile_extends.get(current).copied() else {
+            // `current` is the starting profile (always present) or a
+            // valid parent (also present, because we resolved it
+            // before recursing). Either way this is unreachable.
+            unreachable!("invariant: walked profile is always a sibling key");
+        };
+        let Some((parent, parent_span)) = extends_entry else {
+            // Chain terminates at a root profile (no `extends`).
+            break;
+        };
+        if !profile_extends.contains_key(parent) {
+            let suggestion = nearest(parent, sibling_names);
+            return Err(Error::ProfileExtendsUnknownParent {
+                profile: current.to_string(),
+                parent: parent.to_string(),
+                command: command.to_string(),
+                src: src.clone(),
+                span: parent_span,
+                help: build_help("profiles", sibling_names, suggestion),
+            });
+        }
+        current = parent;
+    }
+    // Every name visited on this walk has a cycle-free chain.
+    for name in chain {
+        clean.insert(name);
     }
     Ok(())
 }
@@ -707,5 +845,166 @@ mod tests {
             }"#,
         )
         .unwrap();
+    }
+
+    // --- §2.8.5 profile inheritance: `extends` resolution + cycles ---
+
+    #[test]
+    fn extends_pointing_at_existing_profile_passes() {
+        parse_and_validate(
+            r#"foo {
+                parent { x "1" }
+                child extends="parent" { y "2" }
+            }"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn extends_forward_declaration_passes() {
+        // Child declared before parent in source order is allowed —
+        // validation happens after the whole config is parsed.
+        parse_and_validate(
+            r#"foo {
+                child extends="parent" { y "2" }
+                parent { x "1" }
+            }"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn extends_unknown_parent_rejected_with_did_you_mean() {
+        let err = parse_and_validate(
+            r#"foo {
+                parent {}
+                child extends="paren" {}
+            }"#,
+        )
+        .unwrap_err();
+        let Error::ProfileExtendsUnknownParent {
+            profile,
+            parent,
+            command,
+            help,
+            ..
+        } = err
+        else {
+            panic!("expected ProfileExtendsUnknownParent");
+        };
+        assert_eq!(profile, "child");
+        assert_eq!(parent, "paren");
+        assert_eq!(command, "foo");
+        assert!(help.contains("parent"));
+        assert!(help.contains("did you mean"));
+    }
+
+    #[test]
+    fn extends_unknown_parent_with_no_siblings_says_none() {
+        let err = parse_and_validate(r#"foo { child extends="ghost" {} }"#).unwrap_err();
+        let Error::ProfileExtendsUnknownParent { help, .. } = err else {
+            panic!();
+        };
+        assert!(help.contains("available profiles: child") || help.contains("no profiles"));
+    }
+
+    #[test]
+    fn extends_self_loop_rejected() {
+        let err = parse_and_validate(r#"foo { a extends="a" {} }"#).unwrap_err();
+        let Error::ProfileInheritanceCycle { cycle, spans, .. } = err else {
+            panic!("expected ProfileInheritanceCycle");
+        };
+        assert_eq!(cycle, vec!["a".to_string(), "a".to_string()]);
+        assert_eq!(spans.len(), 1);
+    }
+
+    #[test]
+    fn extends_two_cycle_rejected() {
+        let err = parse_and_validate(
+            r#"foo {
+                a extends="b" {}
+                b extends="a" {}
+            }"#,
+        )
+        .unwrap_err();
+        let Error::ProfileInheritanceCycle { cycle, spans, .. } = err else {
+            panic!();
+        };
+        assert_eq!(cycle.len(), 3);
+        assert_eq!(cycle.first(), cycle.last());
+        assert!(cycle.contains(&"a".to_string()));
+        assert!(cycle.contains(&"b".to_string()));
+        assert_eq!(spans.len(), 2);
+    }
+
+    #[test]
+    fn extends_three_cycle_rejected() {
+        let err = parse_and_validate(
+            r#"foo {
+                a extends="b" {}
+                b extends="c" {}
+                c extends="a" {}
+            }"#,
+        )
+        .unwrap_err();
+        let Error::ProfileInheritanceCycle { cycle, spans, .. } = err else {
+            panic!();
+        };
+        assert_eq!(cycle.len(), 4);
+        assert_eq!(spans.len(), 3);
+    }
+
+    #[test]
+    fn extends_nested_cycle_excludes_non_cyclic_prefix() {
+        // `x` points into the y↔z cycle but isn't itself on the
+        // cycle. The diagnostic should pinpoint y↔z only.
+        let err = parse_and_validate(
+            r#"foo {
+                x extends="y" {}
+                y extends="z" {}
+                z extends="y" {}
+            }"#,
+        )
+        .unwrap_err();
+        let Error::ProfileInheritanceCycle { cycle, spans, .. } = err else {
+            panic!();
+        };
+        assert!(
+            !cycle.contains(&"x".to_string()),
+            "x should not appear on the cycle, got {cycle:?}"
+        );
+        assert_eq!(cycle.len(), 3);
+        assert_eq!(spans.len(), 2);
+    }
+
+    #[test]
+    fn extends_chain_terminates_at_root() {
+        // Three-level chain with no cycle is fine.
+        parse_and_validate(
+            r#"foo {
+                grand {}
+                parent extends="grand" {}
+                child extends="parent" {}
+            }"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn extends_target_only_searches_same_command() {
+        // A profile named `parent` exists in command `bar`, not `foo`;
+        // the unknown-parent error must fire for `foo.child`.
+        let err = parse_and_validate(
+            r#"foo {
+                child extends="parent" {}
+            }
+            bar {
+                parent {}
+            }"#,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, Error::ProfileExtendsUnknownParent { command, .. } if command == "foo"),
+        );
     }
 }
