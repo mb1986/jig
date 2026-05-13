@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The `#null` placeholder (SPEC §2.4.3). A flag whose value is the
+  KDL keyword `#null` is a position-only marker: it declares the
+  flag at this source position but contributes no value, suppresses
+  nothing, and is never emitted on argv. Its source position feeds
+  the first-occurrence rule, so a later survivor of the same key
+  (typically from a profile or an inherited tier) emits at the
+  placeholder's slot. Idiomatic for declaring command-level
+  documentation — listing every flag a command supports at canonical
+  positions and letting profiles fill in actual values — where you
+  want the placeholder to be visible in the config but absent from
+  the resolved command when no value is supplied. The `+` append
+  marker on a `#null` is rejected at parse time.
+
+### Migration note
+
+- If you used `a #false` in defaults expecting it to reserve a
+  position for a profile to fill in (the v0.2.0 behavior), use
+  `a #null` in 0.6.1+. The `#false` behavior is unchanged from
+  v0.3.0+: it remains a "remove this flag" marker that drops the
+  occurrence including its position. `#null` is the dedicated
+  placeholder tool.
+
 ## [0.6.0] — 2026-05-13
 
 ### Added
