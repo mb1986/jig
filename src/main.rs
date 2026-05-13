@@ -22,6 +22,7 @@ mod exec;
 mod format;
 mod list;
 mod resolve;
+mod suggest;
 
 use std::io::Write;
 

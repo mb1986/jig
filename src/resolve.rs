@@ -44,6 +44,7 @@ use crate::config::{
     Argument, Command, CommandChild, Config, EnvEntry, EnvValue, FlagMode, FlagValue,
 };
 use crate::errors::{Error, Result};
+use crate::suggest::{build_help, nearest};
 
 /// Output of a successful resolution.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -433,50 +434,6 @@ fn lookup_profile<'a>(cmd: &'a Command, profile: &'a str) -> Result<&'a str> {
         command: cmd.name.clone(),
         help: build_help("profiles", &available, suggestion),
     })
-}
-
-/// Format the `help` field rendered with each diagnostic.
-fn build_help(label: &str, available: &[&str], did_you_mean: Option<&str>) -> String {
-    use std::fmt::Write as _;
-    let mut s = String::new();
-    if available.is_empty() {
-        let _ = write!(s, "no {label} are defined in this config");
-    } else {
-        let _ = write!(s, "available {label}: {}", available.join(", "));
-    }
-    if let Some(suggestion) = did_you_mean {
-        s.push('\n');
-        let _ = write!(s, "did you mean {suggestion:?}?");
-    }
-    s
-}
-
-/// Return the nearest entry in `haystack` to `needle` by edit
-/// distance, if any are within a small threshold.
-fn nearest<'a>(needle: &str, haystack: &[&'a str]) -> Option<&'a str> {
-    let threshold = 2.max(needle.chars().count() / 3);
-    haystack
-        .iter()
-        .map(|s| (*s, levenshtein(needle, s)))
-        .filter(|(_, d)| *d <= threshold)
-        .min_by_key(|(_, d)| *d)
-        .map(|(s, _)| s)
-}
-
-fn levenshtein(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    let mut cur: Vec<usize> = vec![0; b.len() + 1];
-    for i in 1..=a.len() {
-        cur[0] = i;
-        for j in 1..=b.len() {
-            let cost = usize::from(a[i - 1] != b[j - 1]);
-            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
-        }
-        std::mem::swap(&mut prev, &mut cur);
-    }
-    prev[b.len()]
 }
 
 #[cfg(test)]
