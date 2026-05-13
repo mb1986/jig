@@ -77,15 +77,25 @@ Refactor the binary into a library (`jig-run`) plus a thin binary
 (`jig`). Allows other Rust tools to embed `jig`'s resolution logic,
 reuse the config types, etc. Non-breaking for v1 users.
 
-## Profile inheritance
+## Multi-parent profile inheritance
 
-Profiles inheriting from other profiles (not just from command-level
-defaults). E.g. a `qwen-coder-large` profile that inherits from
-`qwen-coder` and overrides one or two flags.
+Single-parent inheritance via `extends="<parent>"` shipped in v0.6
+(see `SPEC.md` §2.8.5). The natural follow-up is letting a profile
+list multiple parents — useful when two orthogonal "mixins" want to
+combine (e.g. `gpu` + `large-context`). Open questions:
 
-Adds real complexity to the merge algorithm and the config grammar
-(how is the parent referenced?). Wait for a real demand signal before
-implementing.
+- How is the parent list expressed in KDL? A space-separated string
+  is ambiguous if parent names can contain hyphens; a child node
+  feels heavier than the single-parent property; KDL doesn't have
+  native list-of-strings syntax for properties.
+- Merge order across multiple parents (left-to-right wins? MRO?
+  user-controlled?). Each option has subtle interactions with the
+  N-tier cascade in §2.8.5.
+- Diamond resolution: if A extends [B, C] and both B and C extend D,
+  does D's body activate once or twice?
+
+Wait for a demand signal before implementing; single-parent covers
+the immediate use case.
 
 ## Multiple aliases per command
 

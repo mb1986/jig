@@ -178,7 +178,15 @@ struct Command {
 
 enum CommandChild {
     Default(Argument),
-    Profile { name: String, args: Vec<Argument> },
+    Profile {
+        name: String,
+        /// Optional parent profile (`SPEC.md` §2.8.5). When set,
+        /// the parent's body activates alongside this profile's at
+        /// resolution time, with the parent emitting at its own
+        /// source slot.
+        extends: Option<(String, SourceSpan)>,
+        args: Vec<Argument>,
+    },
 }
 ```
 
@@ -187,6 +195,8 @@ This directly mirrors the spec's wording ("walk the command's children in source
 This representation also keeps the door open for `FUTURE.md`'s "repeating the same profile within a command" feature: lifting the uniqueness constraint becomes a matter of deleting the validation pass, with no changes required to the walk or the types. The naive alternative — `defaults: Vec<Argument>` plus `profiles: HashMap<String, Profile>` — would require restructuring the type to allow duplicates, so we avoid it.
 
 Profile lookup by name is implemented as a linear scan of `children`. This is O(n), but n is tiny (typically < 20 profiles per command), and the tradeoff favors structural simplicity over micro-optimization.
+
+Inheritance is implemented as an N-tier extension of the merge algorithm rather than a separate code path. `resolve()` walks `extends` pointers to build the chain `[root, …, leaf]`, tags each profile-in-chain's body candidates with a tier index (defaults = 0, root ancestor = 1, …, leaf = N), and runs the §2.8.5 per-key cascade. The two-tier rules degenerate cleanly when no inheritance is used; every pre-inheritance test passes byte-identical. Cycle detection and unknown-parent diagnostics live in `config::validate`, so `resolve` can assume an acyclic chain and panic via `assert!` if that invariant is broken (defence-in-depth for unvalidated callers).
 
 ## 8. Error Reporting
 
@@ -306,6 +316,7 @@ Empty file (or absent). Lint configuration lives in source via `#![warn]` / `#![
   - Source-order argument emission (flags and positionals interleaved per config)
   - Exit codes (125 for missing config, 127 for missing binary, propagated otherwise)
   - Boolean vs string distinction (`#true` vs `"true"`)
+  - Profile inheritance via `extends="<parent>"` (`SPEC.md` §2.8.5): cascade override, forward declarations, sibling non-leak; cycle and unknown-parent diagnostics rendered through the binary
   - Completion script generation (`--completions zsh|bash|fish` produces non-empty script and exits 0)
   - Dynamic completion candidate emission (`--list-commands` / `--list-profiles`): correct outputs for unique names, aliases, duplicated bare names; silent exit-0 for missing/malformed configs; `--config <PATH>` forwarding
 - **Fuzz testing:** out of scope for v1. The KDL parser itself is fuzzed upstream.
@@ -319,7 +330,7 @@ The following are deliberately deferred and tracked here so they are not silentl
 - Global / per-user configuration.
 - Environment variable interpolation in values.
 - Templating, includes, or computed values.
-- Inheritance between profiles (only command-level defaults).
+- Multi-parent / diamond inheritance between profiles (single-parent `extends=` is supported per `SPEC.md` §2.8.5).
 - Multiple aliases per command.
 - JSON or other machine-readable `--list` format.
 - Argv-style `--dry-run` output.

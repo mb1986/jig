@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Profile-to-profile inheritance via the `extends="<parent>"` property
+  on a profile node (SPEC §2.8.5). A child profile inherits its
+  parent's body and may override individual flags or env vars; the
+  parent may itself inherit from a grandparent, and so on. Selecting
+  the leaf activates every profile in the chain — each one's body
+  emits at its own source position — and the merge algorithm
+  generalises to an N-tier cascade where the highest-tier value wins
+  at the earliest source position. The `extends` graph is restricted
+  to a single parent per profile, must be acyclic, and references
+  only profiles within the same command; unknown parents and cycles
+  are rejected at validation time with diagnostics that label every
+  participating site. Inheriting profiles render in `--list` output
+  as `<name> (extends <parent>)`.
+
+### Changed
+
+- The single-mode position rule in the per-key merge (SPEC §2.8.1)
+  is now strictly "earliest source index among unmarked survivors".
+  This is the spec-correct generalisation that two-tier-only code
+  approximated as "default's slot if present, else profile's"; the
+  rules coincide whenever defaults precede the selected profile in
+  source order (the typical layout), so every pre-existing test
+  resolves byte-identical. The corner where they diverge is a
+  profile slot that textually precedes its overriding default with
+  other source content in between — that configuration now emits the
+  merged occurrence at the profile's slot, matching the §2.8.1
+  wording.
+
 ## [0.5.0] — 2026-05-10
 
 ### Changed

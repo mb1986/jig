@@ -215,6 +215,8 @@ some-tool {
 
 The `verbose` default is always emitted because it lives outside any profile. Each profile's `timeout` is emitted only when that profile is selected, and at the position where the profile is written.
 
+A profile may declare a parent via `extends="<parent-profile>"`. Selecting an inheriting profile activates every profile in its inheritance chain — each one's body emits at its own source position. See §2.8.5.
+
 ### 2.8 Merge semantics
 
 When `jig <command> <profile>` is invoked, the resolved argument list is built in three steps:
@@ -403,12 +405,74 @@ gcc {
 
 `+I #false` and unmarked `I #false` apply suppression identically: the `#false` clears defaults regardless of marker (§2.8 step 2.1).
 
+#### 2.8.5 Profile inheritance
+
+A profile node may carry a `extends="<parent-profile>"` KDL property naming another profile within the same command:
+
+```kdl
+llama-server "serve" {
+    host "0.0.0.0"
+    port 8090
+
+    qwen-coder {
+        m "/models/qwen-coder.gguf"
+        -ngl 999
+    }
+
+    qwen-coder-large extends="qwen-coder" {
+        m "/models/qwen-coder-large.gguf"
+    }
+}
+```
+
+When the selected profile inherits from a parent (and the parent may itself inherit from a grandparent, and so on), every profile in the chain is "activated": each one's body emits at its own source position when the leaf is selected. The chain extends upward from the selected leaf to a root profile that carries no `extends`.
+
+`jig serve qwen-coder-large` resolves to `llama-server --host 0.0.0.0 --port 8090 -m /models/qwen-coder-large.gguf -ngl 999`: defaults pass through, `qwen-coder`'s `-ngl 999` is inherited, and `qwen-coder-large` overrides `-m`.
+
+Restrictions in v1:
+
+- `extends` references are scoped to the same command. Cross-command inheritance is not supported.
+- A profile inherits from at most one parent. Diamond / multi-parent inheritance is not supported.
+- The `extends` graph must be acyclic. Cycles are rejected at validation time with a diagnostic that names every profile on the cycle.
+- Forward declarations are allowed: a child may textually precede its parent within the command body. Validation runs after the whole config is parsed.
+
+The merge algorithm in §2.8 generalises directly. Replace the two-tier "defaults vs profile" with an N-tier cascade: tier 0 is defaults, tier 1 is the chain's root ancestor, …, tier N is the selected leaf. The per-key rules in §2.8 step 2 become:
+
+1. **Suppression.** Let `T = max { tier of any #false survivor with tier > 0 }`. If `T` exists, drop every entry whose tier is strictly less than `T`, and drop every `#false` entry regardless of tier. If `T` does not exist, drop only the `#false` entries themselves.
+2. **Marker partition** is unchanged: `+`-marked entries always emit at their own source position with their own value.
+3. **Mode selection.** Single mode iff *every* tier contributes ≤ 1 unmarked survivor; otherwise repeat mode.
+4. **Single-mode** emits one occurrence at the **earliest source index** among unmarked survivors, with the **highest-tier** value among them. With no inheritance this collapses to §2.8.1's first-occurrence rule.
+5. **Repeat mode** emits each unmarked survivor at its own source index, unchanged from §2.8 step 2.4.
+
+Env-var resolution (§2.11) generalises in the same way: walk tiers descending (leaf → … → defaults); the first tier with an outcome for the name wins. The first-occurrence position rule continues to use the ascending walk so `--list` and `--dry-run` order stay deterministic.
+
+A worked example with a three-level chain:
+
+```kdl
+foo {
+    grand { x "from-grand" }
+    parent extends="grand" { x "from-parent" }
+    child extends="parent" { x "from-child" }
+}
+```
+
+| Command            | Resolved |
+|--------------------|----------|
+| `jig foo grand`    | `foo -x from-grand` |
+| `jig foo parent`   | `foo -x from-parent` |
+| `jig foo child`    | `foo -x from-child` |
+
+Each invocation activates a different leaf and so a different chain; the highest-tier value wins.
+
 ### 2.9 Constraints and errors
 
 - A command name may appear more than once across the file. If a command name appears more than once, **every** occurrence must declare an alias, and those aliases must all be distinct (per the alias uniqueness rule below). A duplicated command name is **not** a valid lookup key — invocations of that command must use one of its aliases. A command name that appears exactly once may be invoked either by that name or (if present) by its alias.
 - A command's alias (if present) must be unique across the file. Duplicate aliases are a parse error.
 - An alias may not collide with any non-duplicated command name in the file. A command may declare an alias equal to its own name (e.g. `foo "foo" {...}`) when that name appears exactly once; this is harmless redundancy and not a collision. A duplicated command name may not be used as an alias anywhere (including as one of its own occurrences' alias), since that would silently shadow the bare-name ambiguity.
 - Within a command, profile names must be unique. Duplicates are a parse error.
+- A profile's `extends="<parent>"` (§2.8.5) must name another profile within the same command. An unknown parent is a parse error.
+- The per-command `extends` graph must be acyclic. Cycles are a parse error; the diagnostic names every profile on the cycle.
+- A profile node may only carry the named property `extends`; any other KDL property on a profile node is a parse error. Profile nodes may not carry positional values.
 - Repeated flag keys within a single scope are **allowed**. The merge algorithm in §2.8 picks single-mode vs repeat-mode resolution per key based on the multiplicity of unmarked occurrences across the default and selected-profile sides; the `+` marker (§2.5 rule 0) opts an occurrence out of v1's first-occurrence collapse. (Positionals have no key and may repeat freely.)
 - Command names, aliases, and profile names must not start with `-` (would be ambiguous with `jig`'s own flags) or `+` (reserved for the explicit append marker on flag keys, §2.5).
 - Environment-variable names (the identifier on a `(env)`-annotated node, §2.10) must match the POSIX-portable pattern `[A-Za-z_][A-Za-z0-9_]*`. Within a single scope (the defaults of one command, or the body of one profile) each env-var name must be unique; cross-scope occurrences (defaults plus a profile) are how overrides are expressed and remain allowed.
@@ -819,7 +883,7 @@ The following are deliberately deferred. None of them are precluded by the v1 de
 - Global / user-level config (`~/.config/jig/`).
 - Environment variable interpolation in values.
 - Templating, computed values, or includes.
-- Profile inheritance between profiles (only command-level defaults).
+- Multi-parent / diamond inheritance between profiles (single-parent inheritance via `extends=` is supported, §2.8.5).
 - Multiple aliases per command.
 - Multiple occurrences of the same profile within a command.
 - Subcommand chains beyond what fits in a quoted command name.
