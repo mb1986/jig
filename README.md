@@ -1,18 +1,19 @@
 # jig
 
-Run commands with arguments taken from a declarative configuration
-file.
+[![Crates.io](https://img.shields.io/crates/v/jig-run.svg)](https://crates.io/crates/jig-run)
+[![CI](https://github.com/mb1986/jig/actions/workflows/ci.yml/badge.svg)](https://github.com/mb1986/jig/actions/workflows/ci.yml)
+[![Crates.io MSRV](https://img.shields.io/crates/msrv/jig-run?style=flat)](https://crates.io/crates/jig-run)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-`jig` is a profile/preset manager for command-line tools. You write
-a small `jig.kdl` describing the commands you run often, the default
-arguments they take, and named profiles that override or extend
-those defaults. Then `jig <command> [profile]` assembles the
-argument list and executes.
+A small CLI that runs commands using arguments declared in a config
+file. You write a `jig.kdl` ([KDL][kdl]) describing the commands you
+invoke often — defaults, named profiles, env vars, profile
+inheritance — and `jig <command> [profile]` resolves the arguments
+and executes. Conceptually adjacent to [`just`][just]: where `just`
+runs arbitrary shell recipes, `jig` invokes specific programs with
+declarative argument profiles.
 
-It is conceptually adjacent to [`just`][just] but distinct: where
-`just` is a recipe runner that can execute arbitrary shell, `jig`
-only assembles argument lists. One thing, well.
-
+[kdl]: https://kdl.dev
 [just]: https://github.com/casey/just
 
 ## Example
@@ -20,110 +21,130 @@ only assembles argument lists. One thing, well.
 `./jig.kdl`:
 
 ```kdl
-llama-server "serve" {
-    host "0.0.0.0"
-    port 8090
-    c 32768
-    flash-attn #true
+// The string after the command name is an alias:
+// `jig serve <profile>` and `jig api-server <profile>` are equivalent.
+api-server "serve" {
+    // ── Defaults — applied to every profile under this command ──
+    host "0.0.0.0"                       // 2+ char key   →  --host
+    port 8080                            //                →  --port
+    log-level "info"
+    v #true                              // 1-char key, no value emitted  →  -v
 
-    qwen-coder {
-        m "/models/qwen-coder.gguf"
-        -ngl 999
-        -ts "0.5,0.5"
+    // Explicit-dash keys pass through verbatim — for tools that don't
+    // follow POSIX flag conventions (Go, ffmpeg, llama.cpp …).
+    -shutdown-timeout "30s"              //                →  -shutdown-timeout 30s
+
+    // Env vars on the spawned child. Profiles can override or unset.
+    (env)RUST_LOG "info,api=debug"
+
+    // Repeating a key emits every occurrence in source order.
+    cors-origin "app.dev"
+    cors-origin "admin.dev"
+
+    // Single default — profiles can either replace it (single-mode
+    // override) or append with the `+` marker.
+    header "X-Service: api"
+
+    // `#null` declares a flag at this slot but emits no value.
+    // Profiles fill it in; the flag appears at this slot regardless
+    // of where the supplying profile body sits in the file.
+    tls-cert #null
+    tls-key  #null
+
+    // ── Profiles. `jig serve <name>` selects one. ──
+    dev {
+        port 3000                        // single-mode override
+        log-level "debug"
+        header "X-Service: api-dev"      // replaces the default header
     }
 
-    llama3 {
-        m "/models/llama3.gguf"
-        port 8091
+    // `extends=` inherits the parent profile, then layers on top.
+    dev-trace extends="dev" {
+        log-level "trace"
+        pretty #true                     // add a new flag
+    }
+
+    prod {
+        host "127.0.0.1"
+        log-level "warn"
+        v #false                         // suppress the default
+        metrics #true
+        +header "X-Region: eu"           // `+` appends — both headers emit
+        (env)RUST_LOG #false             // unset the env var on the child
+    }
+
+    tls-staging {
+        tls-cert "/etc/ssl/staging.pem"  // fills the #null placeholder
+        tls-key  "/etc/ssl/staging.key"
+    }
+}
+
+// Positionals are bare node names with no value — passed through
+// verbatim in source order.
+rsync "sync" {
+    archive #true
+    verbose #true
+
+    home {
+        "/home/me/"                      // positional (source)
+        "backup:/snapshots/me/"          // positional (destination)
     }
 }
 ```
 
-From that directory:
+From the same directory:
+
+```console
+$ jig --dry-run serve dev-trace
+env RUST_LOG='info,api=debug' api-server --host 0.0.0.0 --port 3000 --log-level trace -v -shutdown-timeout 30s --cors-origin app.dev --cors-origin admin.dev --header 'X-Service: api-dev' --pretty
+
+$ jig --dry-run serve prod
+env -u RUST_LOG api-server --host 127.0.0.1 --port 8080 --log-level warn -shutdown-timeout 30s --cors-origin app.dev --cors-origin admin.dev --header 'X-Service: api' --metrics --header 'X-Region: eu'
+
+$ jig --dry-run serve tls-staging
+env RUST_LOG='info,api=debug' api-server --host 0.0.0.0 --port 8080 --log-level info -v -shutdown-timeout 30s --cors-origin app.dev --cors-origin admin.dev --header 'X-Service: api' --tls-cert /etc/ssl/staging.pem --tls-key /etc/ssl/staging.key
+
+$ jig --dry-run sync home
+rsync --archive --verbose /home/me/ backup:/snapshots/me/
+
+$ jig serve dev
+# spawns api-server with the resolved args, inheriting stdio
+```
+
+`--dry-run` output is shell-quoted so you can copy-paste it and get
+the same effect.
+
+For the full grammar — argument model, prefix synthesis, profile
+inheritance, `#null` placeholders, merge semantics, env-var rules,
+constraints, and diagnostic guarantees — see [`SPEC.md`](SPEC.md).
+
+## Usage
 
 ```text
-$ jig --dry-run serve qwen-coder
-llama-server --host 0.0.0.0 --port 8090 -c 32768 --flash-attn -m /models/qwen-coder.gguf -ngl 999 -ts '0.5,0.5'
-
-$ jig serve qwen-coder
-# launches llama-server with those args, inheriting stdio
+jig [FLAGS]... <command-or-alias> [profile] [PASSTHROUGH]...
 ```
 
-`jig serve` (no profile) launches with just the defaults; `jig serve
-llama3` overrides `--port` and `-m` per the `llama3` profile.
+| Flag                    | What it does                                                       |
+|-------------------------|--------------------------------------------------------------------|
+| `-n`, `--dry-run`       | Print the resolved (shell-quoted) command line and exit.           |
+| `--config <PATH>`       | Use `<PATH>` instead of `./jig.kdl` / `./.jig.kdl`.                |
+| `-l`, `--list`          | List configured commands, aliases, env vars, and profiles.        |
+| `--completions <SHELL>` | Emit a shell completion script (`zsh`, `bash`, `fish`) to stdout.  |
+| `-h`, `--help`          | Print help.                                                        |
+| `-V`, `--version`       | Print version.                                                     |
 
-`--dry-run` output is shell-quoted so you can copy-paste it into a
-terminal and get the same effect.
+Anything after the profile is appended verbatim to the resolved
+command line, including a literal `--` and tokens that look like
+flags. A single `--` written immediately after the command/alias is
+consumed as a "no profile selected" marker; a `--` anywhere later
+passes through unchanged.
 
-## Environment variables
-
-Tools that take configuration from the environment (Docker, the
-`OLLAMA_*` family, CUDA, ...) can be set up alongside flags. A KDL
-node bearing the `(env)` type annotation declares an env var rather
-than a CLI argument; profiles override defaults the same way they
-override flags, and `(env)NAME #false` unsets a variable on the
-child:
-
-```kdl
-llama-server "serve" {
-    host "0.0.0.0"
-    (env)OLLAMA_HOST "0.0.0.0"
-    (env)CUDA_VISIBLE_DEVICES "0,1"
-
-    qwen-coder {
-        m "/models/qwen-coder.gguf"
-        (env)CUDA_VISIBLE_DEVICES "0"
-    }
-
-    sandbox {
-        m "/models/sandbox.gguf"
-        (env)OLLAMA_HOST #false
-    }
-}
-```
-
-```text
-$ jig --dry-run serve qwen-coder
-env OLLAMA_HOST=0.0.0.0 CUDA_VISIBLE_DEVICES=0 llama-server --host 0.0.0.0 -m /models/qwen-coder.gguf
-
-$ jig --dry-run serve sandbox
-env -u OLLAMA_HOST CUDA_VISIBLE_DEVICES='0,1' llama-server --host 0.0.0.0 -m /models/sandbox.gguf
-```
-
-The `env(1)` prefix is the dry-run rendering only; actual execution
-applies the same outcomes directly to the child via
-`Command::env` / `Command::env_remove`. The child inherits `jig`'s
-environment by default; declared sets and unsets layer on top.
-
-## Listing
-
-```text
-$ jig --list
-llama-server (alias: serve)
-  default-args: --host 0.0.0.0 --port 8090 -c 32768 --flash-attn
-  profiles:
-    qwen-coder
-    llama3
-```
-
-## Shell completion
-
-`jig --completions <shell>` writes a completion script to stdout for
-zsh, bash, or fish. The script tab-completes `jig`'s own flags as
-well as the command names, aliases, and profile names defined in the
-`jig.kdl` of whatever directory you're in (and forwards `--config
-<PATH>` if you've passed one).
-
-```sh
-# zsh — drop into a directory on $fpath, then `compinit`:
-jig --completions zsh > "${fpath[1]}/_jig"
-
-# bash — source on shell startup:
-jig --completions bash > ~/.local/share/bash-completion/completions/jig
-
-# fish:
-jig --completions fish > ~/.config/fish/completions/jig.fish
-```
+`jig` follows the wrapper-tool exit-code convention used by `env(1)`,
+`timeout(1)`, `nohup(1)`: `0` on success, `125` for `jig`'s own
+errors (missing config, parse error, unknown command/profile, bad
+CLI), `126` when the resolved command is found but not executable,
+`127` when it is not found, and anything else propagated verbatim
+from the child.
 
 ## Install
 
@@ -131,8 +152,14 @@ From [crates.io](https://crates.io/crates/jig-run):
 
 ```sh
 cargo install jig-run
-# installs the `jig` binary (the crate is published as `jig-run`
-# because the bare `jig` name is taken by an unrelated utility).
+```
+
+The crate is published as `jig-run`; the installed binary is `jig`.
+
+The latest commit, straight from git:
+
+```sh
+cargo install --git https://github.com/mb1986/jig
 ```
 
 Or build from source:
@@ -144,85 +171,27 @@ cargo build --release
 # binary lands in target/release/jig
 ```
 
-Rust 1.85+ (edition 2024). No nightly features.
+Edition 2024. No nightly features. Tested on Linux and macOS.
 
-## Usage
+## Shell completion
 
-```text
-jig [JIG_FLAGS]... <command-or-alias> [profile] [PASSTHROUGH]...
+`jig --completions <shell>` writes a completion script to stdout for
+`zsh`, `bash`, or `fish`. The script tab-completes `jig`'s own flags
+and the command names, aliases, and profile names defined in the
+`jig.kdl` of whatever directory you're in (and forwards
+`--config <PATH>` if you've passed one).
+
+```sh
+# zsh — drop into a directory on $fpath, then `compinit`:
+jig --completions zsh > "${fpath[1]}/_jig"
+
+# bash:
+jig --completions bash > ~/.local/share/bash-completion/completions/jig
+
+# fish:
+jig --completions fish > ~/.config/fish/completions/jig.fish
 ```
-
-`<command-or-alias>` matches a command name or alias from `jig.kdl`.
-`[profile]` selects a profile within that command. Anything after is
-appended verbatim to the resolved command line, including a literal
-`--` and tokens that look like flags.
-
-| Flag                    | What it does                                                    |
-|-------------------------|-----------------------------------------------------------------|
-| `-n`, `--dry-run`       | Print the resolved (shell-quoted) command line and exit         |
-| `--config <PATH>`       | Use `<PATH>` instead of `./jig.kdl` / `./.jig.kdl`              |
-| `-l`, `--list`          | List configured commands, aliases, and profiles                 |
-| `--completions <SHELL>` | Emit a completion script (zsh/bash/fish) with dynamic command/profile completion |
-| `-h`, `--help`          | Print help                                                      |
-| `-V`, `--version`       | Print version                                                   |
-
-### Argument model
-
-A KDL node with one value is a **flag**; a node with no value is a
-**positional**. A `host "0.0.0.0"` line becomes `--host 0.0.0.0`;
-a single-character key like `m "/path"` becomes `-m /path`; an
-explicit-dash key like `-ngl 999` is passed verbatim. KDL booleans
-toggle flag presence: `flash-attn #true` emits `--flash-attn`,
-`flash-attn #false` suppresses it (even when it would otherwise
-come from defaults).
-
-A flag key may repeat within a scope — `gcc { I "/a"; I "/b" }`
-resolves to `gcc -I /a -I /b`, and `-v -v -v` count flags work the
-same way. When defaults *and* a profile both contribute a single
-unmarked occurrence of the same key, the profile overrides (v1
-behavior). To force *add* instead of *override* in that single+single
-case, prefix the profile's key with `+`: `+I "/proj"`. See
-[`SPEC.md`](./SPEC.md) for the full table.
-
-### Exit codes
-
-`jig` follows the wrapper-tool exit-code convention used by
-`env(1)`, `timeout(1)`, `nohup(1)`:
-
-| Code | Meaning                                                              |
-|------|----------------------------------------------------------------------|
-| 0    | Successful resolution and execution (or any `--dry-run` / `--list` / `--completions` / `--help` / `--version`) |
-| 125  | `jig` itself failed (missing config, parse / constraint error, unknown command/profile/alias, bad CLI usage) |
-| 126  | The resolved command was found but is not executable                 |
-| 127  | The resolved command was not found                                   |
-| else | Propagated verbatim from the executed command                        |
-
-## Configuration
-
-See [`SPEC.md`](./SPEC.md) for the behavioral specification, which
-covers:
-
-- Config-file lookup precedence (`./jig.kdl` then `./.jig.kdl`, or
-  `--config <PATH>`).
-- The argument model — flags vs positionals, booleans, dash-quoted
-  positionals.
-- Prefix synthesis — when keys get `-` vs `--`.
-- Defaults and profiles, and the merge semantics (first-occurrence
-  positioning, repeated flag keys with single-mode vs repeat-mode
-  resolution, `#false` suppression, and the `+` append marker).
-- Constraints (uniqueness, no-leading-dash names).
-- Diagnostic quality — what `jig` errors aim for.
-
-[`IMPLEMENTATION.md`](./IMPLEMENTATION.md) covers the build, type
-design, and dependency choices.
-
-## Status
-
-**v1, Unix only.** Tested on Linux and macOS. Windows support is
-deferred — see [`FUTURE.md`](./FUTURE.md), which also tracks
-environment-variable bindings, parent-directory config traversal,
-profile inheritance, and other ideas surfaced during design.
 
 ## License
 
-MIT — see [`LICENSE`](./LICENSE).
+MIT — see [`LICENSE`](LICENSE).
