@@ -445,7 +445,7 @@ fn unknown_extends_parent_exits_125_with_help() {
     .unwrap();
     jig()
         .current_dir(dir.path())
-        .arg("serve")
+        .arg("foo")
         .assert()
         .code(125)
         .stderr(predicate::str::contains(

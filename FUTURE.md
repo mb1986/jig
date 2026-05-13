@@ -79,10 +79,10 @@ reuse the config types, etc. Non-breaking for v1 users.
 
 ## Multi-parent profile inheritance
 
-Single-parent inheritance via `extends="<parent>"` shipped in v0.6
-(see `SPEC.md` §2.8.5). The natural follow-up is letting a profile
-list multiple parents — useful when two orthogonal "mixins" want to
-combine (e.g. `gpu` + `large-context`). Open questions:
+Single-parent inheritance via `extends="<parent>"` is supported
+(see `SPEC.md` §2.8.5 and `CHANGELOG.md`). The natural follow-up is
+letting a profile list multiple parents — useful when two orthogonal
+"mixins" want to combine (e.g. `gpu` + `large-context`). Open questions:
 
 - How is the parent list expressed in KDL? A space-separated string
   is ambiguous if parent names can contain hyphens; a child node
