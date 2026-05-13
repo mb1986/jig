@@ -115,6 +115,32 @@ profile {
 
 These are passed through verbatim as positional arguments. There is no ambiguity with flags because flags always have a value.
 
+#### 2.4.3 The `#null` placeholder
+
+A flag whose value is the KDL keyword `#null` is a **position-only placeholder**:
+
+- It declares the flag at this source position but contributes no value.
+- It is never emitted on the resolved command line (no `-a #null` literal in argv).
+- It does not suppress anything (unlike `#false`); a default-side `#null` does not clear lower tiers, and a profile-side `#null` does not override a default's value.
+- It is not a survivor for mode selection (a `#null` in repeat-mode candidates does not push the side over the multiplicity threshold).
+- Its **source position** is retained for the first-occurrence rule (§2.8 step 2.4 / §2.8.5 step 4). When a later survivor of the same key emits in single mode, it emits at the earliest of the survivor's idx and any `#null` ghost idx.
+
+Typical use: declare command-level documentation — list every flag the command supports at canonical positions — and let profiles supply the actual values:
+
+```kdl
+some-tool {
+    m #null            // every profile must supply a model path
+    host "0.0.0.0"
+
+    fast { m "/m1" }
+    slow { m "/m2" }
+}
+```
+
+`jig some-tool fast` → `some-tool -m /m1 --host 0.0.0.0`. The `-m` emits at the `#null` slot (idx 0), before `--host`. Without a profile, `jig some-tool` → `some-tool --host 0.0.0.0` — the placeholder has no value to emit.
+
+The `+` append marker (§2.5 rule 0) on a `#null` is rejected as a parse error: `#null` has nothing to emit separately, so combining it with the marker is meaningless. Quoted `"#null"` is a literal string value (the four characters `#null`), not the keyword — same convention as `"true"` vs `#true` in §2.4.1.
+
 ### 2.5 Flag prefix rules
 
 The mapping from key name to CLI flag is:
@@ -133,7 +159,7 @@ Rule 0 examples:
 | `+-ngl 999`        | yes     | `-ngl 999`   |
 | `+--explicit "v"`  | yes     | `--explicit v` |
 
-A bare `+` with no key text after it is a parse error. A leading `+` on a command, alias, or profile name is also a parse error (§2.9), since names of any kind cannot start with `+`.
+A bare `+` with no key text after it is a parse error. A leading `+` on a command, alias, or profile name is also a parse error (§2.9), since names of any kind cannot start with `+`. The marker is also rejected on a `#null` placeholder (§2.4.3): `#null` has nothing to emit separately.
 
 Rule 1 is the escape hatch for non-POSIX flag conventions like llama.cpp's `-ngl`, `-ts`, `-c:v`, etc.
 
@@ -234,7 +260,7 @@ When `jig <command> <profile>` is invoked, the resolved argument list is built i
    2. **Marker partition.** Among the survivors, separate `+`-marked entries from unmarked entries.
    3. **Marked entries always emit.** Each `+`-marked candidate emits at its own source position with its own value. Marked entries do not collapse with anything.
    4. **Unmarked entries pick a mode.** Let `D_unmarked` and `P_unmarked` be the surviving unmarked entries on the default and profile sides respectively.
-      - If `|D_unmarked| ≤ 1` *and* `|P_unmarked| ≤ 1`: **single mode** (v1 behavior). Emit at most one occurrence, at the **first-occurrence source position** (the default's index if `D_unmarked` is non-empty, otherwise the profile's), with the profile's value if `P_unmarked` is non-empty, otherwise the default's.
+      - If `|D_unmarked| ≤ 1` *and* `|P_unmarked| ≤ 1`: **single mode** (v1 behavior). Emit at most one occurrence, at the **first-occurrence source position** (the earliest source index of an unmarked survivor or a `#null` ghost (§2.4.3) for this key), with the profile's value if `P_unmarked` is non-empty, otherwise the default's.
       - Otherwise (either side has two or more unmarked entries): **repeat mode**. Every unmarked occurrence emits at its own source position. No collapsing.
 
 3. **Assemble.** Walk the candidate list in source order. Positionals always emit at their own position; flag candidates emit iff the per-key resolution kept them.
@@ -441,7 +467,7 @@ The merge algorithm in §2.8 generalises directly. Replace the two-tier "default
 1. **Suppression.** Let `T = max { tier of any #false survivor with tier > 0 }`. If `T` exists, drop every entry whose tier is strictly less than `T`, and drop every `#false` entry regardless of tier. If `T` does not exist, drop only the `#false` entries themselves.
 2. **Marker partition** is unchanged: `+`-marked entries always emit at their own source position with their own value.
 3. **Mode selection.** Single mode iff *every* tier contributes ≤ 1 unmarked survivor; otherwise repeat mode.
-4. **Single-mode** emits one occurrence at the **earliest source index** among unmarked survivors, with the **highest-tier** value among them. With no inheritance this collapses to §2.8.1's first-occurrence rule.
+4. **Single-mode** emits one occurrence at the **earliest source index** among unmarked survivors and `#null` ghosts (§2.4.3) for this key, with the **highest-tier** value among the unmarked survivors. A `#null` ghost contributes its source position but never its value; a ghost at a tier dropped by step 1's `T`-cascade is dropped along with the rest of its tier. With no inheritance and no `#null` interactions this collapses to §2.8.1's first-occurrence rule.
 5. **Repeat mode** emits each unmarked survivor at its own source index, unchanged from §2.8 step 2.4.
 
 Env-var resolution (§2.11) generalises in the same way: walk tiers descending (leaf → … → defaults); the first tier with an outcome for the name wins. The first-occurrence position rule continues to use the ascending walk so `--list` and `--dry-run` order stay deterministic.
