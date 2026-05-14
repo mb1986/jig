@@ -1001,6 +1001,74 @@ fn preview_suppressed_on_non_exec_paths() {
         .stderr(predicate::str::is_empty());
 }
 
+#[cfg(unix)]
+#[test]
+fn preview_failure_does_not_block_exec_for_non_utf8_passthrough() {
+    // Pre-exec preview is informational (`SPEC.md` §3.4.1); a
+    // non-UTF-8 pass-through arg makes shlex unable to render it,
+    // but `Command::args` accepts the OsString unchanged. The exec
+    // must succeed and stderr must explain why the preview was
+    // skipped instead of going silent.
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "\"true\" {\n}\n").unwrap();
+    let invalid = OsString::from_vec(vec![0xff, 0xfe]);
+    jig()
+        .current_dir(dir.path())
+        .arg("true")
+        .arg("--")
+        .arg(invalid)
+        .assert()
+        .code(0)
+        .stderr(predicate::str::contains("preview unavailable"))
+        .stderr(predicate::str::contains("not valid UTF-8"));
+}
+
+#[cfg(unix)]
+#[test]
+fn dry_run_still_strict_about_non_utf8_passthrough() {
+    // The opposite contract: `--dry-run`'s output IS the line, so a
+    // render failure there is a real failure (exit 125), unchanged
+    // by the preview best-effort policy.
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "\"true\" {\n}\n").unwrap();
+    let invalid = OsString::from_vec(vec![0xff, 0xfe]);
+    jig()
+        .current_dir(dir.path())
+        .arg("--dry-run")
+        .arg("true")
+        .arg("--")
+        .arg(invalid)
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains("not valid UTF-8"));
+}
+
+#[cfg(unix)]
+#[test]
+fn quiet_suppresses_preview_failure_warning_too() {
+    // `-q` skips the preview emitter entirely, so a non-UTF-8
+    // passthrough produces no stderr at all — no preview line and
+    // no `preview unavailable` warning either.
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "\"true\" {\n}\n").unwrap();
+    let invalid = OsString::from_vec(vec![0xff, 0xfe]);
+    jig()
+        .current_dir(dir.path())
+        .arg("-q")
+        .arg("true")
+        .arg("--")
+        .arg(invalid)
+        .assert()
+        .code(0)
+        .stderr(predicate::str::is_empty());
+}
+
 // --- §7.1 list rendering, §3.4 --completions (Step 7) ---
 
 #[test]

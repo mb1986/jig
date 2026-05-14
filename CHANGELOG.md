@@ -22,6 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   completion because the helper counted `-x` as a jig flag. Now
   it routes to file completion via the `-F` rule, matching the
   argv split in `src/cli.rs`.
+- Pre-exec preview rendering is now best-effort: when shell-quoting
+  fails (a non-UTF-8 pass-through arg, a non-UTF-8 cwd, or a NUL
+  byte that `shlex` cannot quote), `jig` writes a one-line
+  `preview unavailable: …` notice to stderr and continues to the
+  spawn instead of erroring out. Previously the wrapper exited 125
+  even though `std::process::Command` itself would have happily
+  accepted the `OsString`/`Path`. `--dry-run` stays strict — the
+  rendered line IS the output there, so a render failure is still
+  a real failure.
 
 ## [0.8.1] — 2026-05-15
 

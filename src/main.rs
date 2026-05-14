@@ -107,14 +107,22 @@ fn run(cli: &Cli) -> Result<i32> {
         Ok(0)
     } else {
         if !cli.quiet {
-            let line = format::to_dry_run(
+            // Pre-exec preview is informational (`SPEC.md` §3.4.1) —
+            // a rendering failure here must not block the spawn.
+            // Surface a short warning so the user knows the preview
+            // was skipped, then continue. If the underlying problem
+            // would also kill the spawn (e.g. a NUL byte in `cwd=`),
+            // exec::run surfaces its own diagnostic shortly after.
+            match format::to_dry_run(
                 &resolved.program,
                 &resolved.args,
                 &cli.passthrough,
                 &resolved.env,
                 resolved.cwd.as_deref(),
-            )?;
-            emit_preview(&line);
+            ) {
+                Ok(line) => emit_preview(&line),
+                Err(e) => emit_preview_unavailable(&e),
+            }
         }
         let argv = format::to_argv(&resolved.args, &cli.passthrough);
         exec::run(
@@ -138,4 +146,14 @@ fn emit_preview(line: &str) {
     } else {
         writeln!(stderr, "{line}")
     };
+}
+
+/// Stderr fallback when preview rendering failed (e.g. non-UTF-8
+/// argv or a NUL byte that `shlex` cannot quote). The preview is
+/// informational and must never affect exit codes or the spawn, so
+/// we replace the preview line with a one-line notice and let the
+/// child run. `--dry-run` keeps the strict behavior — the line IS
+/// the output there.
+fn emit_preview_unavailable(err: &Error) {
+    let _ = writeln!(std::io::stderr(), "jig: preview unavailable: {err}");
 }
