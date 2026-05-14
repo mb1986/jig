@@ -111,7 +111,8 @@ $ jig --dry-run sync home
 rsync --archive --verbose /home/me/ backup:/snapshots/me/
 
 $ jig serve dev
-# spawns api-server with the resolved args, inheriting stdio
+env RUST_LOG='info,api=debug' api-server --host 0.0.0.0 --port 3000 --log-level debug -v -shutdown-timeout 30s --cors-origin app.dev --cors-origin admin.dev --header 'X-Service: api-dev'
+# preview line above is on stderr (bold in a TTY); api-server then runs with stdio inherited
 ```
 
 `--dry-run` output is shell-quoted so you can copy-paste it and get
