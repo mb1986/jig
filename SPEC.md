@@ -999,23 +999,39 @@ Human-readable text only for v1. No JSON or other machine-readable form. May be 
 The output should be readable enough to grep and eyeball, but is not promised to be stable for scripting. Suggested format (non-normative, for implementation guidance):
 
 ```
-llama-server (alias: serve)
-  cwd: /home/me/llama-stack
-  env: -u OLD_VAR OLLAMA_HOST=0.0.0.0
-  default-args: --host 0.0.0.0 --port 8090 -c 32768 --flash-attn
+llama-server  (alias: serve)
+  cwd:      /home/me/llama-stack
+  env:      -u OLD_VAR OLLAMA_HOST=0.0.0.0
+  defaults: --host 0.0.0.0 --port 8090 -c 32768 --flash-attn
   profiles:
     qwen-coder
+      args: -m /models/qwen-coder.gguf -ngl 999
+      env:  CUDA_VISIBLE_DEVICES=0
     llama3
+      args: -m /models/llama3.gguf --port 8091
+    qwen-coder-large  (extends qwen-coder)
+      cwd:  src
+      args: -m /models/qwen-coder-large.gguf
 
-rsync (alias: sync)
-  default-args: --archive --verbose
+rsync  (alias: sync)
+  defaults: --archive --verbose
   profiles:
     backup
+      args: /source/ user@host:/dest/
 ```
 
-The `cwd:` line is emitted only when the command has a `cwd=` property (§2.12). The value is shown as written in the config (an absolute path is shown absolute; a relative path is shown unchanged), not the resolved absolute path. Profile-level `cwd=` is not shown — like profile-level flag and env contributions, it is visible only via `--dry-run`.
+For each command, the header line names the command and (if any) its alias. Then, in order, each command may emit:
 
-The `env:` line is emitted only when the command has env-var defaults (§2.10). It mirrors the `env(1)` form used by `--dry-run`: `-u NAME` for unsets followed by `NAME=value` for sets. Profile-level env contributions are not shown — like profile-level flag contributions, they are visible only via `--dry-run`.
+- A `cwd:` line if the command has a `cwd=` property (§2.12). The value is shown as written in the config (an absolute path is shown absolute; a relative path is shown unchanged), not the resolved absolute path.
+- An `env:` line if the command has default env-var contributions (§2.10). It mirrors the `env(1)` form used by `--dry-run`: `-u NAME` for unsets followed by `NAME=value` for sets.
+- A `defaults:` line if the command has default arguments (§2.7), in source order, using the same shell-quoted token form as `--dry-run` (§7.2).
+- A `profiles:` block listing each profile in source order. Each profile is shown as its own sub-block:
+  - A header naming the profile and (if it inherits, §2.8.5) `(extends <parent>)`.
+  - Optional `cwd:`, `env:`, and `args:` lines on the same channels as the command-level lines and using the same value formats. Each sub-line is omitted if the profile contributes nothing on that channel; a profile with an empty body is shown as just its header.
+
+The per-profile sub-block is a **static** view: each profile's lines show what that profile alone contributes, not the resolved merge of defaults plus the profile (§2.8 / §2.11). Inheritance is named in the header (`extends`) but parent-profile contributions are not flattened in. To see what an invocation actually executes, use `--dry-run`.
+
+Implementations may colorize the output when stdout is a terminal — typically command names, profile names, section labels, and parenthesized annotations — and must fall back to plain text when stdout is not a terminal or when the `NO_COLOR` environment variable is set.
 
 ### 7.2 `--dry-run` output format
 
