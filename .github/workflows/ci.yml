@@ -31,6 +31,20 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
+  msrv:
+    name: msrv (1.88)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Pinned to the `rust-version` in Cargo.toml. Bump both together.
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      # `--locked` makes the resolver fail if Cargo.lock would need to
+      # change; that's what guards against a dep silently bumping its
+      # own MSRV past ours. Build only (no `--all-targets`) so the job
+      # tracks the public crate's floor, not the dev-deps'.
+      - run: cargo build --locked --all-features
+
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
