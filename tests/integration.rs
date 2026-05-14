@@ -201,9 +201,15 @@ fn respects_home_boundary() {
     //
     // With HOME=tempdir/home, the walk must stop after checking
     // tempdir/home and never reach tempdir/jig.kdl.
+    //
+    // macOS resolves `/var/folders/...` (where `tempdir()` lives) to
+    // `/private/var/folders/...` via `getcwd(3)`. Anchor the test on
+    // the canonical form so HOME literally matches an ancestor of
+    // the child's `env::current_dir()`.
     let dir = tempdir().unwrap();
-    fs::write(dir.path().join("jig.kdl"), "outside-home \"out\" {\n}\n").unwrap();
-    let home = dir.path().join("home");
+    let root = dir.path().canonicalize().unwrap();
+    fs::write(root.join("jig.kdl"), "outside-home \"out\" {\n}\n").unwrap();
+    let home = root.join("home");
     let cwd = home.join("proj").join("sub");
     fs::create_dir_all(&cwd).unwrap();
 
@@ -2135,13 +2141,17 @@ fn cwd_dry_run_wraps_command_in_subshell() {
 
 #[test]
 fn cwd_relative_resolves_to_config_dir() {
+    // macOS resolves `/var/folders/...` (where `tempdir()` lives) to
+    // `/private/var/folders/...` via `getcwd(3)`. Use the canonical
+    // form for the expected output to match what jig prints.
     let dir = tempdir().unwrap();
-    let sub = dir.path().join("sub");
+    let root = dir.path().canonicalize().unwrap();
+    let sub = root.join("sub");
     fs::create_dir(&sub).unwrap();
-    fs::write(dir.path().join("jig.kdl"), "foo cwd=\"sub\" {}\n").unwrap();
-    let expected = format!("(cd {}/sub && foo)\n", dir.path().display());
+    fs::write(root.join("jig.kdl"), "foo cwd=\"sub\" {}\n").unwrap();
+    let expected = format!("(cd {}/sub && foo)\n", root.display());
     jig()
-        .current_dir(dir.path())
+        .current_dir(&root)
         .arg("--dry-run")
         .arg("foo")
         .assert()
