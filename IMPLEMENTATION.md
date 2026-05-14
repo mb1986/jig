@@ -233,7 +233,7 @@ struct Cli {
     #[arg(short = 'l', long)]
     list: bool,
 
-    #[arg(long = "completions", value_enum, hide = true)]
+    #[arg(long = "completions", value_enum)]
     completions: Option<clap_complete::Shell>,
 
     /// Command name or alias.
@@ -252,7 +252,7 @@ A literal `--` token in `passthrough` is preserved (clap consumes the `--` separ
 
 ### 9.2 Completion generation
 
-`--completions <SHELL>` emits a hand-rolled completion script for `zsh`, `bash`, or `fish`. Each script is stored as a verbatim file under `src/completions/` (`jig.zsh`, `jig.bash`, `jig.fish`) and embedded into the binary via `include_str!`. The flag is hidden from `--help` because it is rarely used directly by humans.
+`--completions <SHELL>` emits a hand-rolled completion script for `zsh`, `bash`, or `fish`. Each script is stored as a verbatim file under `src/completions/` (`jig.zsh`, `jig.bash`, `jig.fish`) and embedded into the binary via `include_str!`. The flag is listed in `--help` so install paths are discoverable on a crates.io-distributed binary.
 
 Users typically run `jig --completions zsh > /path/to/completion/dir/_jig` once during shell setup. Distribution-level packaging may pre-install the scripts.
 
