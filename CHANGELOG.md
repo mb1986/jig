@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Configuration discovery now walks upward from the current working
+  directory through its ancestors instead of looking only at the CWD
+  (SPEC §2.1). Within each directory `jig.kdl` is preferred over
+  `.jig.kdl`; the first directory containing either file ends the
+  search and only the nearest configuration is loaded. The walk is
+  bounded by `$HOME`: when `$HOME` appears in the ancestor chain it
+  is the last directory checked, otherwise the walk continues to the
+  filesystem root. `--config <PATH>` continues to skip discovery
+  entirely, and `jig` does not change its working directory when the
+  configuration is found in an ancestor. The "config file not found"
+  diagnostic now reports the starting directory and the last
+  directory actually checked, replacing the previous "in directory:
+  <cwd>" line.
+
 ## [0.7.1] — 2026-05-14
 
 ### Fixed

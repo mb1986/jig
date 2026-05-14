@@ -114,6 +114,10 @@ $ jig serve dev
 `--dry-run` output is shell-quoted so you can copy-paste it and get
 the same effect.
 
+`jig` looks for `jig.kdl` (or `.jig.kdl`) starting in the current
+directory and walking up through parents, stopping at `$HOME`, so it
+works from any subdirectory of a project root.
+
 For the full grammar — argument model, prefix synthesis, profile
 inheritance, `#null` placeholders, merge semantics, env-var rules,
 constraints, and diagnostic guarantees — see [`SPEC.md`](SPEC.md).
@@ -127,7 +131,7 @@ jig [FLAGS]... <command-or-alias> [profile] [PASSTHROUGH]...
 | Flag                    | What it does                                                       |
 |-------------------------|--------------------------------------------------------------------|
 | `-n`, `--dry-run`       | Print the resolved (shell-quoted) command line and exit.           |
-| `--config <PATH>`       | Use `<PATH>` instead of `./jig.kdl` / `./.jig.kdl`.                |
+| `--config <PATH>`       | Use `<PATH>` instead of searching CWD and its ancestors for `jig.kdl` / `.jig.kdl`. |
 | `-l`, `--list`          | List configured commands, aliases, env vars, and profiles.        |
 | `--completions <SHELL>` | Emit a shell completion script (`zsh`, `bash`, `fish`) to stdout.  |
 | `-h`, `--help`          | Print help.                                                        |
@@ -177,9 +181,9 @@ Edition 2024. No nightly features. Tested on Linux and macOS.
 
 `jig --completions <shell>` writes a completion script to stdout for
 `zsh`, `bash`, or `fish`. The script tab-completes `jig`'s own flags
-and the command names, aliases, and profile names defined in the
-`jig.kdl` of whatever directory you're in (and forwards
-`--config <PATH>` if you've passed one).
+and the command names, aliases, and profile names from the nearest
+`jig.kdl` discovered by walking up from the current directory (and
+forwards `--config <PATH>` if you've passed one).
 
 ```sh
 # zsh — drop into a directory on $fpath, then `compinit`:

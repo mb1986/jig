@@ -16,13 +16,19 @@ fn jig() -> Command {
 #[test]
 fn missing_config_exits_125_with_helpful_diagnostic() {
     let dir = tempdir().unwrap();
+    // Constrain the upward walk to the tempdir tree so the test
+    // doesn't accidentally pick up a real jig.kdl in some ancestor
+    // of the test runner's CWD.
     jig()
         .current_dir(dir.path())
+        .env("HOME", dir.path())
         .assert()
         .code(125)
         .stderr(predicate::str::contains("config file not found"))
-        .stderr(predicate::str::contains("./jig.kdl"))
-        .stderr(predicate::str::contains("./.jig.kdl"));
+        .stderr(predicate::str::contains("jig.kdl"))
+        .stderr(predicate::str::contains(".jig.kdl"))
+        .stderr(predicate::str::contains("from:"))
+        .stderr(predicate::str::contains("up to:"));
 }
 
 #[test]
@@ -114,6 +120,112 @@ fn explicit_config_flag_skips_cwd_lookup() {
         .code(0);
 }
 
+// --- §2.1 parent-directory traversal ---
+
+#[test]
+fn finds_config_in_parent_directory() {
+    // jig.kdl lives at the tempdir root; jig runs from a subdirectory
+    // and must walk upward to find it.
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "outer-cmd \"outer\" {\n}\n").unwrap();
+    let sub = dir.path().join("sub");
+    fs::create_dir(&sub).unwrap();
+    jig()
+        .current_dir(&sub)
+        .env("HOME", dir.path())
+        .arg("--list")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("outer-cmd (alias: outer)"));
+}
+
+#[test]
+fn nearest_config_wins_when_ancestor_also_has_one() {
+    // Both tempdir/jig.kdl and tempdir/sub/jig.kdl exist; running
+    // from tempdir/sub picks the closer one.
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "outer-cmd \"outer\" {\n}\n").unwrap();
+    let sub = dir.path().join("sub");
+    fs::create_dir(&sub).unwrap();
+    fs::write(sub.join("jig.kdl"), "inner-cmd \"inner\" {\n}\n").unwrap();
+    jig()
+        .current_dir(&sub)
+        .env("HOME", dir.path())
+        .arg("--list")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("inner-cmd"))
+        .stdout(predicate::str::contains("outer-cmd").not());
+}
+
+#[test]
+fn dot_jig_kdl_used_in_ancestor_directory() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join(".jig.kdl"), "foo\n").unwrap();
+    let sub = dir.path().join("sub");
+    fs::create_dir(&sub).unwrap();
+    jig()
+        .current_dir(&sub)
+        .env("HOME", dir.path())
+        .arg("--list")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("foo"));
+}
+
+#[test]
+fn visible_beats_hidden_in_same_ancestor() {
+    // SPEC §2.1: within a single directory, jig.kdl wins over
+    // .jig.kdl. That precedence must apply at every level of the
+    // upward walk, not only the starting CWD.
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "foo\n").unwrap();
+    fs::write(dir.path().join(".jig.kdl"), "this is invalid kdl {").unwrap();
+    let sub = dir.path().join("sub");
+    fs::create_dir(&sub).unwrap();
+    // If the hidden file were preferred, we'd get a parse error (exit 125).
+    jig()
+        .current_dir(&sub)
+        .env("HOME", dir.path())
+        .arg("--list")
+        .assert()
+        .code(0);
+}
+
+#[test]
+fn respects_home_boundary() {
+    // Layout:
+    //   tempdir/jig.kdl         (one level *above* HOME)
+    //   tempdir/home/           (HOME)
+    //   tempdir/home/proj/sub/  (CWD)
+    //
+    // With HOME=tempdir/home, the walk must stop after checking
+    // tempdir/home and never reach tempdir/jig.kdl.
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "outside-home \"out\" {\n}\n").unwrap();
+    let home = dir.path().join("home");
+    let cwd = home.join("proj").join("sub");
+    fs::create_dir_all(&cwd).unwrap();
+
+    jig()
+        .current_dir(&cwd)
+        .env("HOME", &home)
+        .arg("--list")
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains("config file not found"));
+
+    // Moving the config into HOME makes it reachable again.
+    fs::write(home.join("jig.kdl"), "inside-home \"in\" {\n}\n").unwrap();
+    jig()
+        .current_dir(&cwd)
+        .env("HOME", &home)
+        .arg("--list")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("inside-home"));
+}
+
 #[test]
 fn list_prints_command_alias_and_profiles() {
     // §7.1 format: `<name> (alias: <alias>)`, `default-args: ...`
@@ -140,6 +252,7 @@ fn list_requires_config_to_exist() {
     let dir = tempdir().unwrap();
     jig()
         .current_dir(dir.path())
+        .env("HOME", dir.path())
         .arg("--list")
         .assert()
         .code(125)
@@ -994,6 +1107,7 @@ fn list_commands_with_no_config_exits_0_silent() {
     let dir = tempdir().unwrap();
     jig()
         .current_dir(dir.path())
+        .env("HOME", dir.path())
         .arg("--list-commands")
         .assert()
         .code(0)
@@ -1073,6 +1187,7 @@ fn list_profiles_with_no_config_exits_0_silent() {
     let dir = tempdir().unwrap();
     jig()
         .current_dir(dir.path())
+        .env("HOME", dir.path())
         .arg("--list-profiles")
         .arg("anything")
         .assert()

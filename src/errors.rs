@@ -50,15 +50,21 @@ impl ExitCode {
 /// [`Error::exit_code`].
 #[derive(Debug, Error, Diagnostic)]
 pub enum Error {
-    /// No `jig.kdl` (or `.jig.kdl`) was found in the search location
-    /// and no `--config` path was supplied. Per `SPEC.md` §2.1.
-    #[error("config file not found\n  searched: {searched}\n  in directory: {}", cwd.display())]
+    /// No `jig.kdl` (or `.jig.kdl`) was found anywhere in the upward
+    /// search range and no `--config` path was supplied. Per
+    /// `SPEC.md` §2.1.
+    #[error("config file not found\n  searched: {searched}\n  from: {} up to: {}", from.display(), up_to.display())]
     #[diagnostic(help("create a jig.kdl file with at least one command definition"))]
     ConfigNotFound {
-        /// Comma-separated rendering of the paths that were probed.
+        /// Comma-separated list of file names that were probed in
+        /// each ancestor directory (e.g. `"jig.kdl, .jig.kdl"`).
         searched: String,
-        /// The directory in which the search ran.
-        cwd: PathBuf,
+        /// The starting directory of the upward walk (CWD).
+        from: PathBuf,
+        /// The last directory actually checked — either `$HOME` (if
+        /// it appeared in the ancestor chain) or the filesystem
+        /// root.
+        up_to: PathBuf,
     },
 
     /// Reading the config file failed at the OS level (permission
@@ -700,8 +706,9 @@ mod tests {
     #[test]
     fn config_not_found_renders() {
         let err = Error::ConfigNotFound {
-            searched: "./jig.kdl, ./.jig.kdl".to_string(),
-            cwd: PathBuf::from("/home/user/project"),
+            searched: "jig.kdl, .jig.kdl".to_string(),
+            from: PathBuf::from("/home/user/project/src"),
+            up_to: PathBuf::from("/home/user"),
         };
         insta::assert_snapshot!(render_for_snapshot(&err));
     }
@@ -854,7 +861,8 @@ mod tests {
     fn config_not_found_maps_to_jig_failure() {
         let err = Error::ConfigNotFound {
             searched: String::new(),
-            cwd: PathBuf::from("/"),
+            from: PathBuf::from("/"),
+            up_to: PathBuf::from("/"),
         };
         assert_eq!(err.exit_code(), ExitCode::JigFailure);
     }

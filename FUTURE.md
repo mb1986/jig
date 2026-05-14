@@ -7,21 +7,6 @@ without polluting the v1 spec.
 Each entry below is a sketch, not a commitment. Some may be implemented
 in v2; others may be discarded after more thought.
 
-## Parent-directory configuration traversal
-
-Search upward from the current working directory for `jig.kdl` /
-`.jig.kdl`, similar to how `just` and `git` find their configs. Useful
-when `jig` is invoked from a subdirectory of a project root.
-
-Deferred from v1 because the merge semantics across multiple discovered
-files (or the choice not to merge, and just take the nearest one) need
-careful thought. Open questions:
-
-- Stop traversal at `$HOME` to avoid leaking into system-wide configs?
-- If a parent and a child both define the same command, what happens?
-- Should there be an explicit "this is a project root, stop here"
-  marker (like `.git/`)?
-
 ## Working directory
 
 `(cwd) "/some/path"` annotation on a command or profile to `chdir`

@@ -17,23 +17,26 @@
 
 - Shell logic, piping, conditionals, or recipe dependencies — use `just` or shell scripts.
 - Global configuration file or per-user config.
-- Parent-directory configuration traversal.
 - Environment variable expansion or templating.
 
 ## 2. Configuration File
 
 ### 2.1 Location
 
-`jig` looks for a configuration file in the current working directory only:
+`jig` looks for a configuration file by starting in the current working directory and walking upward through its ancestors. Within each directory it checks, in order:
 
-1. `./jig.kdl` (preferred, visible)
-2. `./.jig.kdl` (hidden fallback)
+1. `jig.kdl` (preferred, visible)
+2. `.jig.kdl` (hidden fallback)
 
-If both exist, `jig.kdl` is used and `.jig.kdl` is silently ignored.
+The first directory that contains either file ends the search; within that directory, `jig.kdl` is used and `.jig.kdl` is silently ignored when both are present. No merging is performed across directories — only the nearest configuration is loaded.
 
-If neither exists, `jig` exits with an error.
+The upward walk is bounded by `$HOME`: if `$HOME` is an ancestor of the current working directory, the walk stops after checking `$HOME` and does not cross above it. Otherwise (including when `$HOME` is unset, or when the current working directory is outside `$HOME`) the walk continues up to the filesystem root.
 
-When the `--config <PATH>` flag is provided, the explicit path is used directly and the CWD lookup is skipped entirely. The path may be absolute or relative (relative paths are resolved against the CWD as usual).
+If no configuration is found anywhere in the search range, `jig` exits with an error that reports the file names searched, the starting directory, and the last directory actually checked.
+
+When the `--config <PATH>` flag is provided, the explicit path is used directly and the upward search is skipped entirely. The path may be absolute or relative (relative paths are resolved against the CWD as usual).
+
+`jig` does not change its working directory when the configuration is found in an ancestor: the resolved command is still executed from the user's CWD.
 
 ### 2.2 Format
 
@@ -905,7 +908,6 @@ The `env(1)` prefix is the dry-run rendering only; actual execution applies the 
 
 The following are deliberately deferred. None of them are precluded by the v1 design.
 
-- Parent-directory config traversal.
 - Global / user-level config (`~/.config/jig/`).
 - Environment variable interpolation in values.
 - Templating, computed values, or includes.
