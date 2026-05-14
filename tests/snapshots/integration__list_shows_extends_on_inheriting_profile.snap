@@ -1,6 +1,5 @@
 ---
 source: tests/integration.rs
-assertion_line: 701
 expression: stdout
 ---
 llama-server  (alias: serve)

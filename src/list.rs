@@ -56,18 +56,26 @@ fn print_command(cmd: &Command, theme: Theme) -> Result<()> {
         Some(alias) => println!(
             "{}  {}",
             theme.cmd_name(&cmd.name),
-            theme.annotation(&format!("(alias: {alias})"))
+            theme.alias_annotation(&format!("(alias: {alias})"))
         ),
         None => println!("{}", theme.cmd_name(&cmd.name)),
     }
 
     if let Some((path, _)) = &cmd.cwd {
-        println!("  {}{path}", kv_label(theme, "cwd:", CMD_LABEL_WIDTH));
+        println!(
+            "  {}{}",
+            kv_label(theme, "cwd:", CMD_LABEL_WIDTH),
+            theme.value(path)
+        );
     }
 
     if !cmd.env.is_empty() {
         let line = format::format_env_entries(&cmd.env)?;
-        println!("  {}{line}", kv_label(theme, "env:", CMD_LABEL_WIDTH));
+        println!(
+            "  {}{}",
+            kv_label(theme, "env:", CMD_LABEL_WIDTH),
+            theme.value(&line)
+        );
     }
 
     let defaults: Vec<&Argument> = cmd
@@ -80,7 +88,11 @@ fn print_command(cmd: &Command, theme: Theme) -> Result<()> {
         .collect();
     if !defaults.is_empty() {
         let line = format::format_args(defaults)?;
-        println!("  {}{line}", kv_label(theme, "defaults:", CMD_LABEL_WIDTH));
+        println!(
+            "  {}{}",
+            kv_label(theme, "defaults:", CMD_LABEL_WIDTH),
+            theme.value(&line)
+        );
     }
 
     let has_profiles = cmd
@@ -125,28 +137,31 @@ fn print_profile(
         Some(parent) => println!(
             "    {}  {}",
             theme.profile_name(name),
-            theme.annotation(&format!("(extends {parent})"))
+            theme.extends_annotation(&format!("(extends {parent})"))
         ),
         None => println!("    {}", theme.profile_name(name)),
     }
     if let Some(path) = cwd {
         println!(
-            "      {}{path}",
-            kv_label(theme, "cwd:", PROFILE_LABEL_WIDTH)
+            "      {}{}",
+            kv_label(theme, "cwd:", PROFILE_LABEL_WIDTH),
+            theme.value(path)
         );
     }
     if !env.is_empty() {
         let line = format::format_env_entries(env)?;
         println!(
-            "      {}{line}",
-            kv_label(theme, "env:", PROFILE_LABEL_WIDTH)
+            "      {}{}",
+            kv_label(theme, "env:", PROFILE_LABEL_WIDTH),
+            theme.value(&line)
         );
     }
     if !args.is_empty() {
         let line = format::format_args(args)?;
         println!(
-            "      {}{line}",
-            kv_label(theme, "args:", PROFILE_LABEL_WIDTH)
+            "      {}{}",
+            kv_label(theme, "args:", PROFILE_LABEL_WIDTH),
+            theme.value(&line)
         );
     }
     Ok(())
@@ -169,11 +184,12 @@ fn kv_label(theme: Theme, label: &str, width: usize) -> String {
 /// Terminal styling for `--list`. `Plain` returns its input unchanged;
 /// `Ansi` wraps names, labels, and annotations in ANSI escape codes.
 ///
-/// Only four roles are styled — section-label-and-name coloring is a
+/// A small fixed role set is styled (command name, profile name,
+/// section label, and the two annotation kinds) — coloring is a
 /// readability cue, not a syntax highlighter; flag keys, values, and
 /// env-var names are intentionally left to the default foreground so
-/// the existing `format::format_args` / `format::format_env_entries` renderers
-/// can be reused unchanged.
+/// the existing `format::format_args` / `format::format_env_entries`
+/// renderers can be reused unchanged.
 #[derive(Debug, Clone, Copy)]
 enum Theme {
     Plain,
@@ -192,37 +208,60 @@ impl Theme {
         }
     }
 
-    /// Bold cyan — the command name on the header line.
+    /// Bold blue — the command name on the header line.
     fn cmd_name(self, s: &str) -> String {
         match self {
             Self::Plain => s.to_string(),
-            Self::Ansi => format!("\x1b[1;36m{s}\x1b[0m"),
+            Self::Ansi => format!("\x1b[1;34m{s}\x1b[0m"),
         }
     }
 
-    /// Bold — profile names inside the `profiles:` sub-block.
+    /// Italic magenta — profile names inside the `profiles:` sub-block.
+    /// Distinct hue and weight from the dim section labels so the
+    /// two roles don't visually blend on a dense listing.
     fn profile_name(self, s: &str) -> String {
         match self {
             Self::Plain => s.to_string(),
-            Self::Ansi => format!("\x1b[1m{s}\x1b[0m"),
+            Self::Ansi => format!("\x1b[3;35m{s}\x1b[0m"),
         }
     }
 
-    /// Bold — section labels (`cwd:`, `env:`, `defaults:`, `args:`,
-    /// `profiles:`).
+    /// Dim (faint) — section labels (`cwd:`, `env:`, `defaults:`,
+    /// `args:`, `profiles:`). Lowered contrast rather than added
+    /// weight, so the values that follow stay the foreground content
+    /// and the labels read as scaffolding.
     fn label(self, s: &str) -> String {
         match self {
             Self::Plain => s.to_string(),
-            Self::Ansi => format!("\x1b[1m{s}\x1b[0m"),
+            Self::Ansi => format!("\x1b[2m{s}\x1b[0m"),
         }
     }
 
-    /// Dim — parenthesized header annotations like `(alias: serve)`
-    /// or `(extends qwen-coder)`.
-    fn annotation(self, s: &str) -> String {
+    /// Green — `(alias: ...)` annotations on the command header line.
+    fn alias_annotation(self, s: &str) -> String {
         match self {
             Self::Plain => s.to_string(),
-            Self::Ansi => format!("\x1b[2m{s}\x1b[0m"),
+            Self::Ansi => format!("\x1b[32m{s}\x1b[0m"),
+        }
+    }
+
+    /// Amber (256-color goldenrod) — `(extends ...)` annotations on
+    /// inheriting profile header lines.
+    fn extends_annotation(self, s: &str) -> String {
+        match self {
+            Self::Plain => s.to_string(),
+            Self::Ansi => format!("\x1b[38;5;214m{s}\x1b[0m"),
+        }
+    }
+
+    /// Bright white — the value rendered after a section label
+    /// (cwd paths, env lines, defaults, profile args). Pairs with
+    /// the dim labels above so the data is the foreground content
+    /// and the labels read as scaffolding.
+    fn value(self, s: &str) -> String {
+        match self {
+            Self::Plain => s.to_string(),
+            Self::Ansi => format!("\x1b[97m{s}\x1b[0m"),
         }
     }
 }
@@ -237,35 +276,56 @@ mod tests {
         assert_eq!(t.cmd_name("llama-server"), "llama-server");
         assert_eq!(t.profile_name("qwen-coder"), "qwen-coder");
         assert_eq!(t.label("defaults:"), "defaults:");
-        assert_eq!(t.annotation("(alias: serve)"), "(alias: serve)");
+        assert_eq!(t.alias_annotation("(alias: serve)"), "(alias: serve)");
+        assert_eq!(t.extends_annotation("(extends qwen)"), "(extends qwen)");
+        assert_eq!(t.value("--host 0.0.0.0"), "--host 0.0.0.0");
     }
 
     #[test]
-    fn theme_ansi_wraps_cmd_name_in_bold_cyan() {
+    fn theme_ansi_wraps_cmd_name_in_bold_blue() {
         assert_eq!(
             Theme::Ansi.cmd_name("llama-server"),
-            "\x1b[1;36mllama-server\x1b[0m"
+            "\x1b[1;34mllama-server\x1b[0m"
         );
     }
 
     #[test]
-    fn theme_ansi_wraps_profile_name_in_bold() {
+    fn theme_ansi_wraps_profile_name_in_italic_magenta() {
         assert_eq!(
             Theme::Ansi.profile_name("qwen-coder"),
-            "\x1b[1mqwen-coder\x1b[0m"
+            "\x1b[3;35mqwen-coder\x1b[0m"
         );
     }
 
     #[test]
-    fn theme_ansi_wraps_label_in_bold() {
-        assert_eq!(Theme::Ansi.label("args:"), "\x1b[1margs:\x1b[0m");
+    fn theme_ansi_wraps_label_in_dim() {
+        assert_eq!(Theme::Ansi.label("args:"), "\x1b[2margs:\x1b[0m");
     }
 
     #[test]
-    fn theme_ansi_wraps_annotation_in_dim() {
+    fn theme_ansi_wraps_alias_annotation_in_green() {
         assert_eq!(
-            Theme::Ansi.annotation("(extends qwen-coder)"),
-            "\x1b[2m(extends qwen-coder)\x1b[0m"
+            Theme::Ansi.alias_annotation("(alias: serve)"),
+            "\x1b[32m(alias: serve)\x1b[0m"
+        );
+    }
+
+    #[test]
+    fn theme_ansi_wraps_extends_annotation_in_amber() {
+        // Amber here is 256-color goldenrod (38;5;214), distinct from
+        // the alias-annotation green so the two annotation kinds read
+        // apart on dense listings.
+        assert_eq!(
+            Theme::Ansi.extends_annotation("(extends qwen-coder)"),
+            "\x1b[38;5;214m(extends qwen-coder)\x1b[0m"
+        );
+    }
+
+    #[test]
+    fn theme_ansi_wraps_value_in_bright_white() {
+        assert_eq!(
+            Theme::Ansi.value("--host 0.0.0.0"),
+            "\x1b[97m--host 0.0.0.0\x1b[0m"
         );
     }
 
@@ -286,6 +346,6 @@ mod tests {
         // ANSI escapes around the label must not count toward alignment;
         // padding is appended as plain spaces after the styled label.
         let s = kv_label(Theme::Ansi, "cwd:", 9);
-        assert_eq!(s, "\x1b[1mcwd:\x1b[0m      ");
+        assert_eq!(s, "\x1b[2mcwd:\x1b[0m      ");
     }
 }
