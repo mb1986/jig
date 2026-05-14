@@ -39,51 +39,60 @@ function __jig_config_args
     end
 end
 
-# Number of positionals already typed (skipping flags and their
-# values). 0 = command/alias, 1 = profile, 2+ = pass-through.
-function __jig_positional
+# Echo each positional token already on the command line, one per
+# line. Mirrors jig's argv split (src/cli.rs `split_argv`): jig
+# flags are only meaningful before the first positional, so once a
+# non-flag token has appeared every later token — `-x` included —
+# is command/profile/pass-through context.
+function __jig_positionals_in_argv
     set -l toks (__jig_args)
     set -l n (count $toks)
     set -l skip 0
-    set -l count 0
+    set -l scanning 1
     set -l i 2
     while test $i -le $n
         set -l t $toks[$i]
-        if test $skip -eq 1
-            set skip 0
-        else if test "$t" = "--config" -o "$t" = "--list-profiles" -o "$t" = "--completions"
-            set skip 1
-        else if string match -q -- "-*" $t
-            # bare flag, no value
-        else
-            set count (math $count + 1)
+        if test $scanning -eq 1
+            if test $skip -eq 1
+                set skip 0
+                set i (math $i + 1)
+                continue
+            end
+            if test "$t" = "--"
+                set scanning 0
+                set i (math $i + 1)
+                continue
+            end
+            if test "$t" = "--config" -o "$t" = "--list-profiles" -o "$t" = "--completions"
+                set skip 1
+                set i (math $i + 1)
+                continue
+            end
+            if string match -q -- "--config=*" $t
+                set i (math $i + 1)
+                continue
+            end
+            if string match -q -- "-*" $t
+                set i (math $i + 1)
+                continue
+            end
+            set scanning 0
         end
+        echo $t
         set i (math $i + 1)
     end
-    echo $count
+end
+
+# Number of positionals already typed. 0 = command/alias,
+# 1 = profile, 2+ = pass-through.
+function __jig_positional
+    count (__jig_positionals_in_argv)
 end
 
 # Echo the first positional token already typed (the command/alias),
 # or nothing if there is none yet.
 function __jig_first_positional
-    set -l toks (__jig_args)
-    set -l n (count $toks)
-    set -l skip 0
-    set -l i 2
-    while test $i -le $n
-        set -l t $toks[$i]
-        if test $skip -eq 1
-            set skip 0
-        else if test "$t" = "--config" -o "$t" = "--list-profiles" -o "$t" = "--completions"
-            set skip 1
-        else if string match -q -- "-*" $t
-            # bare flag, no value
-        else
-            echo $t
-            return
-        end
-        set i (math $i + 1)
-    end
+    __jig_positionals_in_argv | head -n 1
 end
 
 function __jig_complete_commands

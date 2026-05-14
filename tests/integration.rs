@@ -1642,6 +1642,153 @@ fn bash_completion_initial_hyphen_offers_jig_flags() {
     }
 }
 
+// --- fish: positional count after first non-flag token ---
+//
+// fish's `__jig_positional` previously treated every `-*` token as
+// a jig flag, even after a positional had been entered, so
+// `jig serve -x <TAB>` reported count=1 and invoked profile
+// completion instead of falling through to pass-through context.
+// The driver overrides `__jig_args` (which normally calls
+// `commandline -opc`) so we can feed deterministic argv lists.
+
+const FISH_POSITIONAL_DRIVER: &str = r#"
+# $argv[1] is the literal "driver" placeholder, $argv[2] is the
+# script path, $argv[3..] are the simulated typed tokens.
+source $argv[2]
+set -g JIG_TEST_TOKS $argv[3..]
+function __jig_args
+    printf '%s\n' jig $JIG_TEST_TOKS
+end
+echo "count="(__jig_positional)
+echo "first="(__jig_first_positional)
+"#;
+
+struct FishProbe {
+    count: u32,
+    first: String,
+}
+
+fn fish_probe(words: &[&str]) -> FishProbe {
+    let script = std::env::current_dir()
+        .unwrap()
+        .join("src/completions/jig.fish");
+    let mut cmd = std::process::Command::new("fish");
+    cmd.arg("-c")
+        .arg(FISH_POSITIONAL_DRIVER)
+        .arg("driver")
+        .arg(&script);
+    for w in words {
+        cmd.arg(w);
+    }
+    let out = cmd.output().unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let mut count = 0;
+    let mut first = String::new();
+    for line in stdout.lines() {
+        if let Some(rest) = line.strip_prefix("count=") {
+            count = rest.parse().unwrap_or_default();
+        } else if let Some(rest) = line.strip_prefix("first=") {
+            first = rest.to_string();
+        }
+    }
+    FishProbe { count, first }
+}
+
+#[test]
+fn fish_completion_no_tokens_yet_count_zero() {
+    if !shell_present("fish") {
+        eprintln!("skipping: fish not on PATH");
+        return;
+    }
+    let p = fish_probe(&[]);
+    assert_eq!(p.count, 0);
+    assert_eq!(p.first, "");
+}
+
+#[test]
+fn fish_completion_command_only_count_one() {
+    if !shell_present("fish") {
+        eprintln!("skipping: fish not on PATH");
+        return;
+    }
+    let p = fish_probe(&["serve"]);
+    assert_eq!(p.count, 1);
+    assert_eq!(p.first, "serve");
+}
+
+#[test]
+fn fish_completion_hyphen_token_after_positional_counts_as_passthrough() {
+    if !shell_present("fish") {
+        eprintln!("skipping: fish not on PATH");
+        return;
+    }
+    // The regression: `jig serve -x <TAB>` must not look like the
+    // user is still selecting a profile. Count must be ≥ 2 so the
+    // `-F` rule fires and `__jig_complete_profiles` is not called.
+    let p = fish_probe(&["serve", "-x"]);
+    assert_eq!(p.count, 2);
+    assert_eq!(p.first, "serve");
+}
+
+#[test]
+fn fish_completion_command_and_profile_count_two() {
+    if !shell_present("fish") {
+        eprintln!("skipping: fish not on PATH");
+        return;
+    }
+    let p = fish_probe(&["serve", "qwen-coder"]);
+    assert_eq!(p.count, 2);
+    assert_eq!(p.first, "serve");
+}
+
+#[test]
+fn fish_completion_config_flag_with_value_consumes_two_tokens() {
+    if !shell_present("fish") {
+        eprintln!("skipping: fish not on PATH");
+        return;
+    }
+    let p = fish_probe(&["--config", "x.kdl", "serve"]);
+    assert_eq!(p.count, 1);
+    assert_eq!(p.first, "serve");
+}
+
+#[test]
+fn fish_completion_config_equals_form_consumes_one_token() {
+    if !shell_present("fish") {
+        eprintln!("skipping: fish not on PATH");
+        return;
+    }
+    let p = fish_probe(&["--config=x.kdl", "serve"]);
+    assert_eq!(p.count, 1);
+    assert_eq!(p.first, "serve");
+}
+
+#[test]
+fn fish_completion_double_dash_before_command_is_consumed() {
+    if !shell_present("fish") {
+        eprintln!("skipping: fish not on PATH");
+        return;
+    }
+    // `--` between flags and positional acts as the boundary and is
+    // dropped, matching `split_argv` in src/cli.rs.
+    let p = fish_probe(&["--", "serve"]);
+    assert_eq!(p.count, 1);
+    assert_eq!(p.first, "serve");
+}
+
+#[test]
+fn fish_completion_double_dash_after_positional_is_passthrough() {
+    if !shell_present("fish") {
+        eprintln!("skipping: fish not on PATH");
+        return;
+    }
+    // Once a positional has appeared, `--` is just another pass-through
+    // token — counted, not consumed.
+    let p = fish_probe(&["serve", "--"]);
+    assert_eq!(p.count, 2);
+    assert_eq!(p.first, "serve");
+}
+
 // --- tilde expansion in --config value (regression) ---
 //
 // Shells only expand `~` at parse time on unquoted words. The value

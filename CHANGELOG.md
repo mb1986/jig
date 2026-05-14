@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   v1, but the parser would walk such a node through the argument
   path and discard its children, so misplaced nesting produced no
   diagnostic and looked like the inner flags had been accepted.
+- Fish completion now matches the zsh/bash behavior of treating
+  every token after the first positional — including ones that
+  start with `-` — as command/profile/pass-through context. Before
+  the fix, typing `jig serve -x <TAB>` still routed to profile
+  completion because the helper counted `-x` as a jig flag. Now
+  it routes to file completion via the `-F` rule, matching the
+  argv split in `src/cli.rs`.
 
 ## [0.8.1] — 2026-05-15
 
