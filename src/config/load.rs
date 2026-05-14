@@ -132,10 +132,10 @@ fn discover_upward() -> Result<PathBuf> {
             return Ok(fallback);
         }
 
-        if let Some(h) = home.as_deref() {
-            if dir == h {
-                break;
-            }
+        if let Some(h) = home.as_deref()
+            && dir == h
+        {
+            break;
         }
     }
 
