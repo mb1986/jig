@@ -32,6 +32,11 @@ Positional arguments:
 
 /// `jig` — run commands with arguments taken from a declarative
 /// configuration file.
+// Independent boolean toggles: `--list`, `--dry-run`, `--quiet`,
+// and the two hidden completion-only flags don't share state, so
+// the state-machine refactor clippy suggests would just bloat the
+// type without expressing anything real.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Default, Parser)]
 #[command(
     name = "jig",
@@ -54,6 +59,12 @@ pub struct Cli {
     /// executing.
     #[arg(short = 'n', long)]
     pub dry_run: bool,
+
+    /// Suppress the pre-exec preview line that `jig` writes to
+    /// stderr before spawning the resolved command. No effect on
+    /// `--dry-run`, `--list`, or any other non-exec path.
+    #[arg(short = 'q', long)]
+    pub quiet: bool,
 
     /// Generate a shell completion script for `<SHELL>`. Hidden
     /// from `--help` because it is rarely run directly by humans.

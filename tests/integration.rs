@@ -868,6 +868,131 @@ fn exec_passes_through_passthrough_args() {
         .stdout("a\nb\nc\n");
 }
 
+// --- §3.4.1 pre-exec preview ---
+
+#[test]
+fn preview_line_appears_on_stderr_before_exec() {
+    // `assert_cmd` captures stderr through a pipe, so `IsTerminal`
+    // is false: the preview is emitted in plain text (no ANSI bold).
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "echo {\n    \"hello\"\n}\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("echo")
+        .assert()
+        .code(0)
+        .stdout("hello\n")
+        .stderr("echo hello\n");
+}
+
+#[test]
+fn preview_line_includes_passthrough_args() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "echo {\n    \"hello\"\n}\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("echo")
+        .arg("--")
+        .arg("world")
+        .assert()
+        .code(0)
+        .stdout("hello world\n")
+        .stderr("echo hello world\n");
+}
+
+#[test]
+fn quiet_long_flag_suppresses_preview() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "echo {\n    \"hello\"\n}\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--quiet")
+        .arg("echo")
+        .assert()
+        .code(0)
+        .stdout("hello\n")
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn quiet_short_flag_suppresses_preview() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "echo {\n    \"hello\"\n}\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("-q")
+        .arg("echo")
+        .assert()
+        .code(0)
+        .stdout("hello\n")
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn preview_does_not_double_print_under_dry_run() {
+    // --dry-run already writes the resolved line to stdout; the
+    // pre-exec preview must not also fire (it would duplicate the
+    // output on stderr).
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "echo {\n    \"hello\"\n}\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--dry-run")
+        .arg("echo")
+        .assert()
+        .code(0)
+        .stdout("echo hello\n")
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn preview_renders_env_prefix_when_env_vars_set() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "echo {\n    \"hi\"\n    (env)JIG_TEST_PREVIEW \"yes\"\n}\n",
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("echo")
+        .assert()
+        .code(0)
+        .stdout("hi\n")
+        .stderr("env JIG_TEST_PREVIEW=yes echo hi\n");
+}
+
+#[test]
+fn preview_shell_quotes_values_with_spaces() {
+    // The preview must reuse `--dry-run`'s shell-quoting so the
+    // line stays copy-pasteable; an unquoted value with a space
+    // would split into two argv tokens.
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "echo {\n    \"a b\"\n}\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("echo")
+        .assert()
+        .code(0)
+        .stdout("a b\n")
+        .stderr("echo 'a b'\n");
+}
+
+#[test]
+fn preview_suppressed_on_non_exec_paths() {
+    // `--list` (and the other non-exec paths) never reach the
+    // preview emitter; this test guards against future regressions
+    // that might push the preview earlier in `run()`.
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "echo {\n    \"hi\"\n}\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--list")
+        .assert()
+        .code(0)
+        .stderr(predicate::str::is_empty());
+}
+
 // --- §7.1 list rendering, §3.4 --completions (Step 7) ---
 
 #[test]

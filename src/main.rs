@@ -24,7 +24,7 @@ mod list;
 mod resolve;
 mod suggest;
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 
 use clap::CommandFactory;
 
@@ -100,7 +100,30 @@ fn run(cli: &Cli) -> Result<i32> {
         println!("{line}");
         Ok(0)
     } else {
+        if !cli.quiet {
+            let line = format::to_dry_run(
+                &resolved.program,
+                &resolved.args,
+                &cli.passthrough,
+                &resolved.env,
+            )?;
+            emit_preview(&line);
+        }
         let argv = format::to_argv(&resolved.args, &cli.passthrough);
         exec::run(&resolved.program, &argv, &resolved.env)
     }
+}
+
+/// Write the pre-exec preview line to stderr per `SPEC.md` §3.4.1.
+/// Bolded with ANSI `\x1b[1m…\x1b[0m` when stderr is a terminal;
+/// plain text otherwise so redirected logs stay readable. A failed
+/// write is silently ignored: the preview is purely informational
+/// and must not affect exit codes or the spawn.
+fn emit_preview(line: &str) {
+    let mut stderr = std::io::stderr();
+    let _ = if stderr.is_terminal() {
+        writeln!(stderr, "\x1b[1m{line}\x1b[0m")
+    } else {
+        writeln!(stderr, "{line}")
+    };
 }

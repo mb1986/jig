@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Pre-exec preview line (SPEC §3.4.1). Before spawning the resolved
+  command, `jig` writes a single shell-quoted line to stderr showing
+  exactly what it is about to run (same format as `--dry-run`,
+  including the leading `env(1)` prefix when env vars are set). The
+  line is rendered in bold when stderr is a terminal and as plain
+  text when stderr is redirected, so log files and grep output stay
+  readable. The preview is suppressed under `--dry-run` (which
+  already prints the resolved line) and on every non-exec path
+  (`--list`, `--completions`, etc.).
+- `-q` / `--quiet` flag to suppress the pre-exec preview line.
+
 ### Changed
 
 - Configuration discovery now walks upward from the current working

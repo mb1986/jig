@@ -611,6 +611,7 @@ Rationale: pass-through tokens are user additions on top of the resolved command
 | Flag                  | Description |
 |-----------------------|-------------|
 | `-n`, `--dry-run`     | Print the resolved command (shell-quoted) to stdout and exit 0 without executing. |
+| `-q`, `--quiet`       | Suppress the pre-exec preview line (§3.4.1). No effect on `--dry-run`, `--list`, or any other non-exec path. |
 | `--config <PATH>`     | Use `<PATH>` instead of looking for `jig.kdl` / `.jig.kdl` in CWD. |
 | `-l`, `--list`        | List all configured commands, aliases, and profiles. Exits 0. |
 | `--completions <SHELL>` | Generate a shell completion script for `<SHELL>` (`zsh`, `bash`, `fish`) and write it to stdout. Exits 0. Hidden from `--help`. |
@@ -618,6 +619,20 @@ Rationale: pass-through tokens are user additions on top of the resolved command
 | `-V`, `--version`     | Print version and exit. |
 
 Long-form `--dry-run` is canonical; `-n` mirrors `make`/`ninja` convention.
+
+#### 3.4.1 Pre-exec preview
+
+Before spawning the resolved command, `jig` writes a single line to **stderr** showing exactly what it is about to run. The line uses the same shell-quoted formatting as `--dry-run` (§7.2), including the leading `env(1)` prefix when env-var contributions are present. A trailing newline follows.
+
+When stderr is a terminal, the line is rendered in bold for visibility (ANSI `\x1b[1m…\x1b[0m`). When stderr is not a terminal (redirected to a file or pipe), the line is emitted in plain text without any escape codes so logs and grep output stay clean.
+
+The preview is suppressed when:
+
+- `-q` / `--quiet` is given, or
+- `--dry-run` is given (the resolved line is already printed to stdout), or
+- any non-exec path is taken (`--list`, `--completions`, `--help`, `--version`, the hidden `--list-commands` / `--list-profiles`).
+
+The preview is purely informational and is not part of the child process's stderr — it is written by `jig` itself, before the child is spawned. It never affects exit codes, argv, or the child's environment.
 
 The `--completions` flag emits a completion script that completes `jig`'s own flags and dispatches to `jig --list-commands` and `jig --list-profiles <COMMAND>` to enumerate command names, aliases, and profile names from the local `jig.kdl` at completion time. The shell scripts forward an explicit `--config <PATH>` from the user's command line so candidates always reflect the chosen config.
 
