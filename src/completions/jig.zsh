@@ -67,6 +67,20 @@ _jig() {
         return
     fi
 
+    # Past the first positional, `--config` and `--completions` are
+    # pass-through tokens — the next word is the child command's
+    # argument, not jig's flag value. Without this guard `_arguments`
+    # would still match the value spec and offer shell names / file
+    # candidates as if jig owned the flag.
+    if (( ${#positionals[@]} > 0 )) && (( CURRENT > 1 )); then
+        case "${words[CURRENT - 1]}" in
+            --config|--completions)
+                _files
+                return
+                ;;
+        esac
+    fi
+
     _arguments -s -S -A "-*" -C \
         '(-h --help)-h[Print help]' \
         '(-h --help)--help[Print help]' \

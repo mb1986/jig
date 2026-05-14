@@ -1872,6 +1872,158 @@ fn fish_completion_double_dash_after_positional_is_passthrough() {
     assert_eq!(p.first, "serve");
 }
 
+// --- `--completions <TAB>` value completion (regression) ---
+//
+// Each shell offers `zsh bash fish` as candidates for the value of
+// `--completions`, but only before the first positional. After a
+// positional, `--completions` is a pass-through token to the child
+// command, and the next word belongs to the child — not jig — so
+// the shell list must not appear.
+
+#[test]
+fn bash_completion_completions_value_offers_shell_list() {
+    if !shell_present("bash") {
+        eprintln!("skipping: bash not on PATH");
+        return;
+    }
+    let reply = bash_reply(&["jig", "--completions", ""]);
+    for shell in ["zsh", "bash", "fish"] {
+        assert!(
+            reply.iter().any(|x| x == shell),
+            "expected `{shell}`; got {reply:?}"
+        );
+    }
+}
+
+#[test]
+fn bash_completion_completions_value_after_positional_drops_shell_list() {
+    if !shell_present("bash") {
+        eprintln!("skipping: bash not on PATH");
+        return;
+    }
+    let reply = bash_reply(&["jig", "serve", "--completions", ""]);
+    for shell in ["zsh", "bash", "fish"] {
+        assert!(
+            !reply.iter().any(|x| x == shell),
+            "must not offer `{shell}` after positional; got {reply:?}"
+        );
+    }
+}
+
+#[test]
+fn zsh_completion_completions_value_after_positional_takes_files_branch() {
+    if !shell_present("zsh") {
+        eprintln!("skipping: zsh not on PATH");
+        return;
+    }
+    let trace = zsh_trace(&["jig", "serve", "--completions", ""]);
+    assert_eq!(trace, "files", "expected `files` only; got `{trace}`");
+}
+
+fn fish_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn fish_complete(cmdline: &str) -> Vec<String> {
+    let script = std::env::current_dir()
+        .unwrap()
+        .join("src/completions/jig.fish");
+    let driver = format!(
+        "source {}\ncomplete -C {}",
+        fish_single_quote(&script.display().to_string()),
+        fish_single_quote(cmdline),
+    );
+    let out = std::process::Command::new("fish")
+        .arg("--no-config")
+        .arg("-c")
+        .arg(&driver)
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(|l| l.split('\t').next().unwrap_or("").to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+#[test]
+fn fish_completion_completions_value_offers_shell_list() {
+    if !shell_present("fish") {
+        eprintln!("skipping: fish not on PATH");
+        return;
+    }
+    let reply = fish_complete("jig --completions ");
+    for shell in ["zsh", "bash", "fish"] {
+        assert!(
+            reply.iter().any(|x| x == shell),
+            "expected `{shell}`; got {reply:?}"
+        );
+    }
+}
+
+#[test]
+fn fish_completion_completions_value_after_positional_drops_shell_list() {
+    if !shell_present("fish") {
+        eprintln!("skipping: fish not on PATH");
+        return;
+    }
+    let reply = fish_complete("jig serve --completions ");
+    for shell in ["zsh", "bash", "fish"] {
+        assert!(
+            !reply.iter().any(|x| x == shell),
+            "must not offer `{shell}` after positional; got {reply:?}"
+        );
+    }
+}
+
+// --- `--config <TAB>` value completion after positional (regression) ---
+//
+// Symmetric to the `--completions` checks above. Pre-positional,
+// `--config <TAB>` offers file completion as a jig flag; after a
+// positional, it falls through to generic pass-through file
+// completion (same observable shape, different code path). Locks
+// in the file-completion behavior for the `--config` half of the
+// fix. The zsh trace test additionally distinguishes the path: the
+// new guard must short-circuit to `_files` *before* `_arguments`
+// is reached, so the trace is `files` and not `arguments`.
+
+#[test]
+fn bash_completion_config_value_after_positional_falls_through_to_files() {
+    if !shell_present("bash") {
+        eprintln!("skipping: bash not on PATH");
+        return;
+    }
+    let reply = bash_reply(&["jig", "serve", "--config", ""]);
+    assert!(
+        reply.iter().any(|x| x == "Cargo.toml"),
+        "expected file completion to include Cargo.toml; got {reply:?}"
+    );
+}
+
+#[test]
+fn zsh_completion_config_value_after_positional_takes_files_branch() {
+    if !shell_present("zsh") {
+        eprintln!("skipping: zsh not on PATH");
+        return;
+    }
+    let trace = zsh_trace(&["jig", "serve", "--config", ""]);
+    assert_eq!(trace, "files", "expected `files` only; got `{trace}`");
+}
+
+#[test]
+fn fish_completion_config_value_after_positional_falls_through_to_files() {
+    if !shell_present("fish") {
+        eprintln!("skipping: fish not on PATH");
+        return;
+    }
+    let reply = fish_complete("jig serve --config ");
+    assert!(
+        reply.iter().any(|x| x == "Cargo.toml"),
+        "expected file completion to include Cargo.toml; got {reply:?}"
+    );
+}
+
 // --- tilde expansion in --config value (regression) ---
 //
 // Shells only expand `~` at parse time on unquoted words. The value

@@ -113,8 +113,11 @@ complete -c jig -s V -l version -d 'Print version'
 complete -c jig -s l -l list -d 'List configured commands and profiles'
 complete -c jig -s n -l dry-run -d 'Print the resolved command without running it'
 complete -c jig -s q -l quiet -d 'Suppress the pre-exec preview line'
-complete -c jig -l config -d 'Use this config file' -r -F
-complete -c jig -l completions -d 'Print a shell completion script' -x -a 'zsh bash fish'
+# Value-taking jig flags only make sense before the first positional —
+# after that, they're pass-through tokens to the child command and the
+# following value belongs to the child, not jig.
+complete -c jig -n 'test (__jig_positional) -eq 0' -l config -d 'Use this config file' -r -F
+complete -c jig -n 'test (__jig_positional) -eq 0' -l completions -d 'Print a shell completion script' -x -a 'zsh bash fish'
 
 complete -c jig -n 'test (__jig_positional) -eq 0' -a '(__jig_complete_commands)' -d 'command or alias'
 complete -c jig -n 'test (__jig_positional) -eq 1' -a '(__jig_complete_profiles)' -d 'profile'

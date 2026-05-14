@@ -17,18 +17,6 @@ _jig() {
     local prev="${COMP_WORDS[COMP_CWORD-1]}"
     local i
 
-    # Filename completion when the cursor sits on `--config`'s value.
-    if [[ "$prev" == "--config" ]]; then
-        COMPREPLY=( $(compgen -f -- "$cur") )
-        return
-    fi
-
-    # Shell-name completion when the cursor sits on `--completions`'s value.
-    if [[ "$prev" == "--completions" ]]; then
-        COMPREPLY=( $(compgen -W "zsh bash fish" -- "$cur") )
-        return
-    fi
-
     # Mirror jig's argv split: parse jig flags only before the first
     # positional command. After that, every token is command/profile/
     # pass-through context, even if it starts with `-`.
@@ -75,6 +63,22 @@ _jig() {
         fi
         positionals+=("$w")
     done
+
+    # Value completion for jig's own flags is only meaningful before
+    # the first positional. After that, `--config` / `--completions`
+    # are pass-through tokens to the child command — what follows is
+    # the child's argument, not jig's, so we fall through to generic
+    # file completion below.
+    if (( ${#positionals[@]} == 0 )); then
+        if [[ "$prev" == "--config" ]]; then
+            COMPREPLY=( $(compgen -f -- "$cur") )
+            return
+        fi
+        if [[ "$prev" == "--completions" ]]; then
+            COMPREPLY=( $(compgen -W "zsh bash fish" -- "$cur") )
+            return
+        fi
+    fi
 
     # Hyphen-prefixed cursor word: only complete jig's own flags when
     # no positional has been entered yet. Past the first positional,

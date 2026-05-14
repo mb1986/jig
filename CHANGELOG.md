@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   correctly *around* them, but neither flag showed up when
   tab-completing `jig -<TAB>`. `--completions` also offers
   `zsh` / `bash` / `fish` as value candidates.
+- Value completion for `--config` and `--completions` no longer
+  fires after the first positional. Once a command name has been
+  entered, those tokens are pass-through to the child command and
+  the next word belongs to the child — not jig — so the shell
+  must not offer file candidates (for `--config`) or shell names
+  (for `--completions`) as if jig still owned the flag.
 
 ## [0.8.2] — 2026-05-15
 
