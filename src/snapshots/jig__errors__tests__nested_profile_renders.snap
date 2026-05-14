@@ -1,0 +1,13 @@
+---
+source: src/errors.rs
+expression: render_for_snapshot(&err)
+---
+  × profiles cannot be nested
+   ╭─[jig.kdl:3:3]
+ 2 │   dev {
+ 3 │     nested {
+   ·   ───┬──
+   ·      ╰── nested profile not allowed
+ 4 │       flag "x"
+   ╰────
+  help: remove the child block to make this an argument, or move it out to be a sibling profile

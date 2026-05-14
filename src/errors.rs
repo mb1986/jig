@@ -489,6 +489,24 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    /// A profile body contains a node with a child block. Per
+    /// `SPEC.md` §2.3 a node-with-children is structurally a profile,
+    /// and "Profiles do not nest within profiles in v1." Earlier
+    /// builds silently dropped the inner block; we now reject it so
+    /// nothing the user wrote is invisibly ignored.
+    #[error("profiles cannot be nested")]
+    #[diagnostic(help(
+        "remove the child block to make this an argument, or move it out to be a sibling profile"
+    ))]
+    NestedProfile {
+        /// Source the span points into.
+        #[source_code]
+        src: NamedSource<String>,
+        /// Span of the offending node name.
+        #[label("nested profile not allowed")]
+        span: SourceSpan,
+    },
+
     /// A profile node carries a KDL property other than `extends`
     /// or `cwd`. Per `SPEC.md` §2.8.5 and §2.12 these are the only
     /// recognised properties on a profile node; every other property
@@ -753,6 +771,7 @@ impl Error {
             | Self::CwdNotUtf8 { .. }
             | Self::CwdContainsNul { .. }
             | Self::CwdNotUsable { .. }
+            | Self::NestedProfile { .. }
             | Self::UnsupportedPropertyOnProfile { .. }
             | Self::ProfileExtendsBadValue { .. }
             | Self::DuplicateProfileExtends { .. }
@@ -1178,6 +1197,19 @@ mod tests {
         let err = Error::CwdNotUsable {
             path: PathBuf::from("/this/does/not/exist"),
             source: std::io::Error::from(std::io::ErrorKind::NotFound),
+        };
+        insta::assert_snapshot!(render_for_snapshot(&err));
+    }
+
+    #[test]
+    fn nested_profile_renders() {
+        let src = NamedSource::new(
+            "jig.kdl",
+            "tool {\n  dev {\n    nested {\n      flag \"x\"\n    }\n  }\n}\n".to_string(),
+        );
+        let err = Error::NestedProfile {
+            src,
+            span: SourceSpan::from((17, 6)),
         };
         insta::assert_snapshot!(render_for_snapshot(&err));
     }

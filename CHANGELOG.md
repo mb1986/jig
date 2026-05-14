@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A node with a child block inside a profile body is now rejected
+  as a parse error (`profiles cannot be nested`) instead of being
+  silently dropped. Spec §2.3 already said profiles do not nest in
+  v1, but the parser would walk such a node through the argument
+  path and discard its children, so misplaced nesting produced no
+  diagnostic and looked like the inner flags had been accepted.
+
 ## [0.8.1] — 2026-05-15
 
 ### Fixed

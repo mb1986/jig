@@ -261,10 +261,10 @@ fn parse_cwd_value(entry: &KdlEntry, src: &NamedSource<String>) -> Result<String
 }
 
 /// Parse the body of a profile node — arguments and `(env)`
-/// declarations interleaved. Profiles do not nest in v1; a node
-/// with children inside a profile body falls through to the
-/// argument path (its children are silently ignored, matching
-/// the pre-§2.10 behavior).
+/// declarations interleaved. Per `SPEC.md` §2.3 a node-with-children
+/// is structurally a profile, and profiles do not nest within
+/// profiles in v1, so a child block on any non-`(env)` node here is
+/// rejected as [`Error::NestedProfile`].
 fn parse_profile_body(
     doc: &KdlDocument,
     src: &NamedSource<String>,
@@ -282,7 +282,15 @@ fn parse_profile_body(
                 }
                 env.push(parse_env_entry(node, src)?);
             }
-            AnnotationKind::None => args.push(parse_argument(node, src)?),
+            AnnotationKind::None => {
+                if node.children().is_some() {
+                    return Err(Error::NestedProfile {
+                        src: src.clone(),
+                        span: node.name().span(),
+                    });
+                }
+                args.push(parse_argument(node, src)?);
+            }
         }
     }
     Ok((args, env))
@@ -956,6 +964,55 @@ mod tests {
         // `+` on an env declaration is meaningless; reject.
         let err = parse(r#"foo { (env)+FOO "x" }"#).unwrap_err();
         assert!(matches!(err, Error::EnvWithAppendMarker { .. }));
+    }
+
+    #[test]
+    fn nested_profile_rejected() {
+        // §2.3: a node-with-children inside a profile body would
+        // structurally be a nested profile, which v1 forbids. The
+        // parser used to silently drop the inner block; it now errors.
+        let err = parse(
+            r#"tool {
+                dev {
+                    nested {
+                        flag "x"
+                    }
+                }
+            }"#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::NestedProfile { .. }));
+    }
+
+    #[test]
+    fn nested_profile_with_value_also_rejected() {
+        // Even when the would-be nested node carries a value (and so
+        // looks like a flag), the child block makes it structurally
+        // a profile, so the same rejection applies.
+        let err = parse(
+            r#"tool {
+                dev {
+                    inner "v" { x "y" }
+                }
+            }"#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::NestedProfile { .. }));
+    }
+
+    #[test]
+    fn empty_nested_block_in_profile_rejected() {
+        // An empty `{}` is still a child block — §2.3's "profile if
+        // it has a child block" rule applies regardless of contents.
+        let err = parse(
+            r"tool {
+                dev {
+                    inner {}
+                }
+            }",
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::NestedProfile { .. }));
     }
 
     #[test]
