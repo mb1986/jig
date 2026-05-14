@@ -43,6 +43,64 @@ implementation. Start with env var expansion only, with explicit opt-in
 syntax (e.g. `(template)m "..."` or escape forms like `${{ HOME }}`
 that don't collide with shell syntax).
 
+## `--explain` / `--why` for argv resolution
+
+A per-key trace of how the resolved command line was built: which
+tier contributed each candidate, which value won the per-key merge,
+which source position emitted it, and how `cwd` and env were
+resolved. Fits jig's "assemble argument lists from structured data"
+identity better than a generic JSON dump and is meaningfully
+different from `--dry-run` (which shows the *result*, not the
+*reasoning*).
+
+```sh
+jig --explain serve qwen-coder
+```
+
+might emit something like:
+
+```text
+program:
+  llama-server
+
+config:
+  /home/me/project/jig.kdl
+
+selected:
+  command: llama-server
+  alias:   serve
+  profile: qwen-coder
+
+resolution:
+  --host
+    from default: "0.0.0.0"
+    result: kept
+
+  --port
+    from default:           8090
+    from profile qwen-coder: 8091
+    result: profile overrides default at default position (single mode)
+
+  -m
+    from profile qwen-coder: "/models/qwen.gguf"
+    result: added
+```
+
+Open questions:
+
+- Scope: just the selected command+profile, or the whole resolution
+  tree (every profile, every key)?
+- Format: human-readable plain text (above), structured (TOML/JSON),
+  or both behind separate flags?
+- Inheritance display: with `extends=`, do we show the full tier
+  cascade per key, or collapse to the winner with a note?
+- How to surface `#null` placeholder positions and `+` append-marker
+  decisions — they affect positioning but don't always emit.
+
+Probably wants a small RFC sketching the exact output before
+implementation, because the value of this feature is in clarity:
+get the shape wrong and it's noise.
+
 ## JSON output for `--list`
 
 Machine-readable form of `jig --list` for use by scripts and other
