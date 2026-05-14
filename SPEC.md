@@ -1087,9 +1087,9 @@ $ jig --dry-run serve qwen-coder
 
 Argv-style (one argument per line) is **not** offered in v1. If users need to inspect quoting, they can pipe the dry-run output to a shell parser, or we can revisit later.
 
-### 7.3 No `--show` / `--explain` flag
+### 7.3 Argv-resolution explanation (`--explain`)
 
-Not provided. The combination of `--list` (to see what's defined) and `--dry-run` (to see what would be executed) is sufficient for the realistic debugging needs of a tool this small. A dedicated explanation mode that traces "default A applied, then profile overrode B with C" is overkill for v1 and probably for any version.
+Not in the initial v1 cut. `--list` (what's defined) and `--dry-run` (what would be executed) cover the realistic debugging needs of a tool this small today. A dedicated explanation mode that traces "default A applied, then profile overrode B with C" — likely spelled `--explain` or `--why` — is a candidate for a later v1.x release once the output shape is settled; see `FUTURE.md` for the current sketch.
 
 ### 7.4 Error reporting
 

@@ -45,6 +45,7 @@ that don't collide with shell syntax).
 
 ## `--explain` / `--why` for argv resolution
 
+Tracked by `SPEC.md` §7.3 as a candidate for a later v1.x release.
 A per-key trace of how the resolved command line was built: which
 tier contributed each candidate, which value won the per-key merge,
 which source position emitted it, and how `cwd` and env were
