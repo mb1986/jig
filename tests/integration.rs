@@ -1312,7 +1312,11 @@ fn help_prints_and_exits_0() {
         .arg("--help")
         .assert()
         .code(0)
-        .stdout(predicate::str::contains("Usage:"));
+        .stdout(predicate::str::contains("Usage:"))
+        // --completions is documented as the install path for shell
+        // tab completion (README + IMPLEMENTATION.md §9.2); it must
+        // stay visible in --help so users discover it.
+        .stdout(predicate::str::contains("--completions"));
 }
 
 #[test]
