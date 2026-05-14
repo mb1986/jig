@@ -2,7 +2,7 @@
 name = "jig-run"
 version = "0.8.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "MIT"
 description = "Run commands with arguments taken from a declarative configuration file."
 repository = "https://github.com/mb1986/jig"

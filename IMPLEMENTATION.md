@@ -24,7 +24,7 @@ Apache-2.0 (or dual MIT/Apache-2.0) was considered but rejected: the patent-gran
 ## 3. Language and Toolchain
 
 - **Language:** Rust, edition 2024.
-- **MSRV:** explicitly pinned in `Cargo.toml` (`rust-version = "1.85"` or whichever stable supports edition 2024 at implementation time).
+- **MSRV:** explicitly pinned in `Cargo.toml` (`rust-version = "1.88"` — the floor is edition 2024 plus stable let-chain expressions; bump only when a feature in use moves it).
 - **No nightly features.** Stable Rust only.
 
 ## 4. Dependencies
@@ -280,7 +280,7 @@ Standard streams (stdin, stdout, stderr) are inherited. Signals delivered to `ji
 name = "jig-run"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "MIT"
 description = "Run commands with arguments taken from a declarative configuration file."
 repository = "https://github.com/<owner>/jig"
