@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] — 2026-05-15
+
 ### Changed
 
 - `--completions <SHELL>` is now shown in `--help`. Previously
@@ -328,7 +330,8 @@ Initial release. v1, Unix only (Linux and macOS).
 - Static shell completion for bash, zsh, fish, elvish, and powershell via
   `clap_complete`.
 
-[Unreleased]: https://github.com/mb1986/jig/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/mb1986/jig/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/mb1986/jig/releases/tag/v0.8.2
 [0.8.1]: https://github.com/mb1986/jig/releases/tag/v0.8.1
 [0.8.0]: https://github.com/mb1986/jig/releases/tag/v0.8.0
 [0.7.1]: https://github.com/mb1986/jig/releases/tag/v0.7.1
