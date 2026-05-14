@@ -66,10 +66,10 @@ pub struct Cli {
     #[arg(short = 'q', long)]
     pub quiet: bool,
 
-    /// Generate a shell completion script for `<SHELL>`. Hidden
-    /// from `--help` because it is rarely run directly by humans.
-    /// Does not require a config file.
-    #[arg(long, value_name = "SHELL", hide = true)]
+    /// Print a shell completion script for `<SHELL>` (zsh, bash,
+    /// fish) to stdout. Typically piped into the shell's completion
+    /// directory at install time. Does not require a config file.
+    #[arg(long, value_name = "SHELL")]
     pub completions: Option<Shell>,
 
     /// Print every command name and alias from the loaded config,

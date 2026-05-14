@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `--completions <SHELL>` is now shown in `--help`. Previously
+  hidden on the assumption that users wouldn't type it directly,
+  but it's the documented install path for tab completion on a
+  crates.io-distributed CLI and deserves visibility. The internal
+  `--list-commands` / `--list-profiles` flags stay hidden.
+
 ### Fixed
 
 - A node with a child block inside a profile body is now rejected
