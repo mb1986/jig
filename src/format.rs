@@ -17,16 +17,23 @@
 use std::ffi::OsString;
 use std::path::Path;
 
-use crate::config::{Argument, FlagValue};
+use crate::config::{Argument, EnvEntry, EnvValue, FlagValue};
 use crate::errors::{Error, Result};
 use crate::resolve::EnvOp;
 
 /// Produce the textual tokens for `args` per §2.5, omitting any
 /// flag whose value is `Bool(false)` (defensive — resolve already
-/// drops them).
-fn args_to_tokens(args: &[Argument]) -> Vec<String> {
-    let mut tokens: Vec<String> = Vec::with_capacity(args.len() * 2);
-    for arg in args {
+/// drops them). Takes any borrowed iterator over [`Argument`] so
+/// callers (notably [`crate::list`]) don't need to materialize an
+/// owned `Vec<Argument>` just to invoke the renderer.
+fn args_to_tokens<'a, I>(args: I) -> Vec<String>
+where
+    I: IntoIterator<Item = &'a Argument>,
+{
+    let iter = args.into_iter();
+    let (lower, _) = iter.size_hint();
+    let mut tokens: Vec<String> = Vec::with_capacity(lower * 2);
+    for arg in iter {
         match arg {
             Argument::Flag {
                 key,
@@ -147,7 +154,7 @@ pub fn to_dry_run(
     }
     let body = shell_join(&body_tokens)?;
 
-    let env_parts = env_tokens_quoted(env_ops)?;
+    let env_parts = env_tokens_quoted(env_ops_as_pairs(env_ops))?;
     let with_env = if env_parts.is_empty() {
         body
     } else {
@@ -183,21 +190,33 @@ pub fn to_dry_run(
 /// would defeat it). Names are not quoted: validation enforces the
 /// POSIX-portable identifier pattern (§2.9), which never needs
 /// shell-quoting.
-fn env_tokens_quoted(env_ops: &[EnvOp]) -> Result<Vec<String>> {
-    let mut parts: Vec<String> = Vec::with_capacity(env_ops.len() * 2);
-    // Unsets first, in source order.
-    for op in env_ops {
-        if let EnvOp::Unset { name } = op {
+///
+/// The input is an iterator of `(name, value)` pairs where `value`
+/// is `None` for an unset and `Some(...)` for a set. This lets both
+/// the resolved-env path ([`EnvOp`], post-merge) and the config-side
+/// path ([`crate::config::EnvEntry`], for `--list`) feed the same
+/// renderer without materializing an intermediate `Vec<EnvOp>`.
+fn env_tokens_quoted<'a, I>(env: I) -> Result<Vec<String>>
+where
+    I: IntoIterator<Item = (&'a str, Option<&'a str>)>,
+{
+    // Two passes (unsets first, sets second) are part of the output
+    // contract, so we collect once. The collected vector holds only
+    // borrowed slices, so the per-entry cost is two pointers and an
+    // `Option`-tag — much cheaper than cloning the source strings.
+    let entries: Vec<(&str, Option<&str>)> = env.into_iter().collect();
+    let mut parts: Vec<String> = Vec::with_capacity(entries.len() * 2);
+    for (name, value) in &entries {
+        if value.is_none() {
             parts.push("-u".to_string());
-            parts.push(name.clone());
+            parts.push((*name).to_string());
         }
     }
-    // Sets second, in source order.
-    for op in env_ops {
-        if let EnvOp::Set { name, value } = op {
-            let qv = shlex::try_quote(value)
+    for (name, value) in &entries {
+        if let Some(v) = value {
+            let qv = shlex::try_quote(v)
                 .map_err(|_| Error::ArgumentContainsNul {
-                    value: value.clone(),
+                    value: (*v).to_string(),
                 })?
                 .into_owned();
             parts.push(format!("{name}={qv}"));
@@ -206,29 +225,58 @@ fn env_tokens_quoted(env_ops: &[EnvOp]) -> Result<Vec<String>> {
     Ok(parts)
 }
 
+/// Adapt a slice of resolved [`EnvOp`]s to the `(name, value)` pair
+/// shape consumed by [`env_tokens_quoted`].
+fn env_ops_as_pairs(env_ops: &[EnvOp]) -> impl Iterator<Item = (&str, Option<&str>)> + '_ {
+    env_ops.iter().map(|op| match op {
+        EnvOp::Set { name, value } => (name.as_str(), Some(value.as_str())),
+        EnvOp::Unset { name } => (name.as_str(), None),
+    })
+}
+
+/// Adapt a slice of config-side [`EnvEntry`]s to the `(name, value)`
+/// pair shape consumed by [`env_tokens_quoted`]. Used by `--list`
+/// (`SPEC.md` §7.1) so both command-level and profile-level env
+/// contributions can be rendered without rebuilding a `Vec<EnvOp>`.
+fn env_entries_as_pairs(entries: &[EnvEntry]) -> impl Iterator<Item = (&str, Option<&str>)> + '_ {
+    entries.iter().map(|e| match &e.value {
+        EnvValue::Set(v) => (e.name.as_str(), Some(v.as_str())),
+        EnvValue::Unset => (e.name.as_str(), None),
+    })
+}
+
 /// Render just the argument tokens (no program, no pass-through),
 /// shell-quoted and space-joined. Used by `--list` to render each
-/// command's default args per `SPEC.md` §7.1.
+/// command's default args and per-profile args per `SPEC.md` §7.1.
+///
+/// Takes any borrowed iterator over [`Argument`] (slices, `Vec`
+/// references, and `Vec<&Argument>` all satisfy it) so callers don't
+/// need to materialize an owned vector to invoke the renderer.
 ///
 /// # Errors
 ///
 /// Returns [`Error::ArgumentContainsNul`] if any value contains a
 /// NUL byte.
-pub fn format_args(args: &[Argument]) -> Result<String> {
+pub fn format_args<'a, I>(args: I) -> Result<String>
+where
+    I: IntoIterator<Item = &'a Argument>,
+{
     shell_join(&args_to_tokens(args))
 }
 
-/// Render env-var operations as a `--list` line: `-u UNSET NAME=value`,
-/// space-joined. Used by `--list` per `SPEC.md` §7.1. Returns an
-/// empty string for an empty input. Values that need shell-quoting
-/// are quoted; names are not (they're POSIX-portable per §2.9).
+/// Render config-side env entries as a `--list` line:
+/// `-u UNSET NAME=value`, space-joined. Used by `--list` per
+/// `SPEC.md` §7.1 to render both the command-level and per-profile
+/// env channels straight from the parsed config. Returns an empty
+/// string for an empty input. Values that need shell-quoting are
+/// quoted; names are not (they're POSIX-portable per §2.9).
 ///
 /// # Errors
 ///
 /// Returns [`Error::ArgumentContainsNul`] if any value contains a
 /// NUL byte.
-pub fn format_env(env_ops: &[EnvOp]) -> Result<String> {
-    Ok(env_tokens_quoted(env_ops)?.join(" "))
+pub fn format_env_entries(entries: &[EnvEntry]) -> Result<String> {
+    Ok(env_tokens_quoted(env_entries_as_pairs(entries))?.join(" "))
 }
 
 #[cfg(test)]
@@ -243,6 +291,14 @@ mod tests {
             key_span: SourceSpan::from((0, 0)),
             value,
             mode: FlagMode::Plain,
+        }
+    }
+
+    fn env_entry(name: &str, value: EnvValue) -> EnvEntry {
+        EnvEntry {
+            name: name.to_string(),
+            name_span: SourceSpan::from((0, 0)),
+            value,
         }
     }
 
@@ -464,22 +520,25 @@ mod tests {
     }
 
     #[test]
-    fn format_env_drops_leading_env_marker() {
+    fn format_env_entries_drops_leading_env_marker() {
         // For --list, the `env:` label conveys what `env(1)` would,
-        // so format_env strips the literal `env` prefix token.
-        let env_ops = vec![
-            EnvOp::Unset { name: "OLD".into() },
-            EnvOp::Set {
-                name: "A".into(),
-                value: "1".into(),
-            },
+        // so format_env_entries strips the literal `env` prefix token.
+        let entries = vec![
+            env_entry("OLD", EnvValue::Unset),
+            env_entry("A", EnvValue::Set("1".into())),
         ];
-        assert_eq!(format_env(&env_ops).unwrap(), "-u OLD A=1");
+        assert_eq!(format_env_entries(&entries).unwrap(), "-u OLD A=1");
     }
 
     #[test]
-    fn format_env_empty_for_no_ops() {
-        assert_eq!(format_env(&[]).unwrap(), "");
+    fn format_env_entries_empty_for_no_entries() {
+        assert_eq!(format_env_entries(&[]).unwrap(), "");
+    }
+
+    #[test]
+    fn format_env_entries_quotes_set_value_with_spaces() {
+        let entries = vec![env_entry("MSG", EnvValue::Set("two words".into()))];
+        assert_eq!(format_env_entries(&entries).unwrap(), "MSG='two words'");
     }
 
     // --- §7.2 cwd subshell wrapping ---

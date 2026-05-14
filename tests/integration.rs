@@ -136,7 +136,7 @@ fn finds_config_in_parent_directory() {
         .arg("--list")
         .assert()
         .code(0)
-        .stdout(predicate::str::contains("outer-cmd (alias: outer)"));
+        .stdout(predicate::str::contains("outer-cmd  (alias: outer)"));
 }
 
 #[test]
@@ -228,8 +228,9 @@ fn respects_home_boundary() {
 
 #[test]
 fn list_prints_command_alias_and_profiles() {
-    // §7.1 format: `<name> (alias: <alias>)`, `default-args: ...`
-    // (with §2.5 prefix synthesis), and a `profiles:` block.
+    // §7.1 format: `<name>  (alias: <alias>)`, `defaults: ...` (with
+    // §2.5 prefix synthesis), and a `profiles:` block with per-profile
+    // `args:` sub-lines.
     let dir = tempdir().unwrap();
     fs::write(
         dir.path().join("jig.kdl"),
@@ -241,10 +242,11 @@ fn list_prints_command_alias_and_profiles() {
         .arg("--list")
         .assert()
         .code(0)
-        .stdout(predicate::str::contains("llama-server (alias: serve)"))
-        .stdout(predicate::str::contains("default-args: --host 0.0.0.0"))
+        .stdout(predicate::str::contains("llama-server  (alias: serve)"))
+        .stdout(predicate::str::contains("defaults: --host 0.0.0.0"))
         .stdout(predicate::str::contains("profiles:"))
-        .stdout(predicate::str::contains("    qwen-coder"));
+        .stdout(predicate::str::contains("    qwen-coder"))
+        .stdout(predicate::str::contains("      args: -m /p"));
 }
 
 #[test]
@@ -287,8 +289,8 @@ fn duplicate_command_name_with_distinct_aliases_lists_both() {
         .arg("--list")
         .assert()
         .code(0)
-        .stdout(predicate::str::contains("llama-server (alias: serve1)"))
-        .stdout(predicate::str::contains("llama-server (alias: serve2)"));
+        .stdout(predicate::str::contains("llama-server  (alias: serve1)"))
+        .stdout(predicate::str::contains("llama-server  (alias: serve2)"));
 }
 
 #[test]
@@ -1067,10 +1069,76 @@ fn list_shows_extends_on_inheriting_profile() {
         "plain profile should render bare; stdout: {stdout:?}",
     );
     assert!(
-        stdout.contains("    qwen-coder-large (extends qwen-coder)\n"),
+        stdout.contains("    qwen-coder-large  (extends qwen-coder)\n"),
         "inheriting profile should show `(extends <parent>)`; stdout: {stdout:?}",
     );
     insta::assert_snapshot!(stdout);
+}
+
+#[test]
+fn list_renders_full_profile_sub_block() {
+    // §7.1: each profile gets its own optional `cwd:` / `env:` /
+    // `args:` sub-lines. This exercises all three channels at the
+    // profile level plus an inheriting profile, alongside the
+    // corresponding command-level defaults.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        r#"llama-server "serve" cwd="/srv" {
+    host "0.0.0.0"
+    (env)OLLAMA_HOST "0.0.0.0"
+    (env)OLD #false
+
+    qwen-coder {
+        m "/models/qwen-coder.gguf"
+        (env)CUDA_VISIBLE_DEVICES "0"
+    }
+
+    qwen-coder-large extends="qwen-coder" cwd="src" {
+        m "/models/qwen-coder-large.gguf"
+    }
+}
+"#,
+    )
+    .unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .arg("--list")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    insta::assert_snapshot!(stdout);
+}
+
+#[test]
+fn list_renders_empty_profile_as_header_only() {
+    // §7.1: "a profile with an empty body is shown as just its
+    // header" — no `cwd:` / `env:` / `args:` sub-lines should appear
+    // under it, and rendering must continue immediately with the next
+    // sibling (or end the block) with no blank line in between.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "foo {\n    bare {}\n    nonbare {\n        host \"x\"\n    }\n}\n",
+    )
+    .unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .arg("--list")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains("    bare\n    nonbare\n"),
+        "empty profile should render as just its header; stdout: {stdout:?}",
+    );
+    assert!(
+        stdout.contains("      args: --host x"),
+        "non-empty sibling profile should still get its args sub-line; \
+         stdout: {stdout:?}",
+    );
 }
 
 #[test]
@@ -1101,7 +1169,7 @@ fn list_omits_default_args_when_none() {
         .output()
         .unwrap();
     let stdout = String::from_utf8(out.stdout).unwrap();
-    assert!(!stdout.contains("default-args"));
+    assert!(!stdout.contains("defaults:"));
     assert!(stdout.contains("profiles:"));
     assert!(stdout.contains("    fast"));
 }
@@ -1886,8 +1954,10 @@ fn list_includes_env_line_for_command_with_env_defaults() {
         .arg("--list")
         .assert()
         .code(0)
-        .stdout(predicate::str::contains("env: -u OLD OLLAMA_HOST=1.2.3.4"))
-        .stdout(predicate::str::contains("default-args: --host 0.0.0.0"));
+        .stdout(predicate::str::contains(
+            "env:      -u OLD OLLAMA_HOST=1.2.3.4",
+        ))
+        .stdout(predicate::str::contains("defaults: --host 0.0.0.0"));
 }
 
 #[test]
@@ -2130,7 +2200,7 @@ fn cwd_list_shows_command_cwd_line() {
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(
-        stdout.contains("  cwd: /work\n"),
+        stdout.contains("  cwd:      /work\n"),
         "expected cwd line; stdout: {stdout:?}"
     );
 }
@@ -2165,7 +2235,7 @@ fn cwd_list_shows_relative_path_verbatim() {
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(
-        stdout.contains("  cwd: sub\n"),
+        stdout.contains("  cwd:      sub\n"),
         "expected relative path verbatim; stdout: {stdout:?}"
     );
 }
@@ -2379,10 +2449,10 @@ fn cwd_with_embedded_nul_live_exec_exits_125_not_panics() {
 }
 
 #[test]
-fn cwd_list_hides_profile_level_cwd() {
-    // §7.1: profile-level `cwd=` is not shown in `--list` — only the
-    // command-level value. (Profile contributions are visible via
-    // `--dry-run`.)
+fn cwd_list_shows_profile_level_cwd() {
+    // §7.1: profile-level `cwd=` appears as a `cwd:` sub-line under
+    // the profile, mirroring the command-level rendering. Path is
+    // shown as written in the config.
     let dir = tempdir().unwrap();
     fs::write(
         dir.path().join("jig.kdl"),
@@ -2397,11 +2467,12 @@ fn cwd_list_hides_profile_level_cwd() {
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(
-        !stdout.contains("/profile-only"),
-        "profile-level cwd should not appear in --list; stdout: {stdout:?}",
+        stdout.contains("      cwd:  /profile-only\n"),
+        "profile-level cwd should appear under profile; stdout: {stdout:?}",
     );
+    // No command-level cwd was set, so no command-level cwd line.
     assert!(
-        !stdout.contains("cwd:"),
-        "no command-level cwd, no cwd: line; stdout: {stdout:?}",
+        !stdout.contains("  cwd:      "),
+        "no command-level cwd, no command-level cwd: line; stdout: {stdout:?}",
     );
 }
