@@ -54,6 +54,12 @@ fn print_command(cmd: &Command) -> Result<()> {
         None => println!("{}", cmd.name),
     }
 
+    if let Some((path, _)) = &cmd.cwd {
+        // Show the cwd as written in the config (relative paths
+        // stay relative, absolute stay absolute) per `SPEC.md` §7.1.
+        println!("  cwd: {path}");
+    }
+
     if !cmd.env.is_empty() {
         let env_ops: Vec<EnvOp> = cmd
             .env

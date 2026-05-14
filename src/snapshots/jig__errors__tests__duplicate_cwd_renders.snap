@@ -1,0 +1,13 @@
+---
+source: src/errors.rs
+assertion_line: 1143
+expression: render_for_snapshot(&err)
+---
+  × `cwd` is specified more than once on this node
+   ╭─[jig.kdl:1:5]
+ 1 │ foo cwd="/a" cwd="/b" {}
+   ·     ────┬─── ────┬───
+   ·         │        ╰── also here
+   ·         ╰── first `cwd` here
+   ╰────
+  help: remove one of the `cwd=` properties; a node may declare the working directory at most once

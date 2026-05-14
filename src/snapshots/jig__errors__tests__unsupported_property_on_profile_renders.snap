@@ -11,4 +11,4 @@ expression: render_for_snapshot(&err)
    ·               ╰── not a recognised property
  3 │ }
    ╰────
-  help: only the `extends` property is allowed on a profile node (e.g. `child extends="parent" { ... }`); remove this property or rename it to `extends`
+  help: the allowed properties on a profile node are `extends="<parent>"` (parent for inheritance) and `cwd="<path>"` (working directory); remove this property or rename it

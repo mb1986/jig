@@ -1,0 +1,8 @@
+---
+source: src/errors.rs
+assertion_line: 1160
+expression: render_for_snapshot(&err)
+---
+  × could not enter cwd "/this/does/not/exist": entity not found
+  ╰─▶ entity not found
+  help: check that the path exists, is a directory, and is reachable; relative paths in `cwd=` resolve against the config-file directory

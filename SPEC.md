@@ -506,6 +506,7 @@ Each invocation activates a different leaf and so a different chain; the highest
 - Command names, aliases, and profile names must not start with `-` (would be ambiguous with `jig`'s own flags) or `+` (reserved for the explicit append marker on flag keys, §2.5).
 - Environment-variable names (the identifier on a `(env)`-annotated node, §2.10) must match the POSIX-portable pattern `[A-Za-z_][A-Za-z0-9_]*`. Within a single scope (the defaults of one command, or the body of one profile) each env-var name must be unique; cross-scope occurrences (defaults plus a profile) are how overrides are expressed and remain allowed.
 - Type annotations on KDL nodes are recognized only where they are explicitly defined. The only annotation defined in v1 is `(env)` (§2.10), which applies to argument-shaped nodes (no children, exactly one value or `#false`) inside a command body or a profile body. Any other annotation, or `(env)` outside the contexts above, is a parse error.
+- The `cwd="<path>"` property (§2.12) is allowed only on a command node or a profile node, alongside any other property that node permits (e.g. `extends=` on profiles). Its value must be a non-empty string; `#true`, `#false`, `#null`, numeric values, and the empty string are parse errors. A given node may carry at most one `cwd=` property.
 
 A profile (a node with children) and a default argument (a node without children) may share the same identifier within a command. They are structurally distinct in the KDL source and play different roles at resolution time, so no collision exists.
 
@@ -552,6 +553,59 @@ When `jig <command> [profile]` is invoked, env-var contributions are resolved on
 There is no repeat mode and no `+` marker for env vars: each name has a single resolved outcome (set to one value, or unset), because POSIX assigns one value per env-var name. Per-scope uniqueness (§2.9) prevents the multiplicity that motivates those mechanisms for flags.
 
 The child process inherits `jig`'s own environment by default; the resolved outcomes are applied on top of that inherited environment (§3.6).
+
+### 2.12 Working directory
+
+A command node or profile node may carry a `cwd="<path>"` KDL property that pins the working directory of the spawned child:
+
+```kdl
+some-tool cwd="/abs/path" {
+    host "0.0.0.0"
+
+    fast cwd="src" {
+        m "./model.gguf"
+    }
+
+    plain {
+        m "./other.gguf"
+    }
+}
+```
+
+The property is a directive *about* the spawn, not an argv contribution: it does not appear on the resolved command line and is not subject to the per-key merge in §2.8.
+
+#### 2.12.1 Placement and value
+
+- `cwd=` is allowed on a top-level command node and on a profile node. It is rejected on any other node (default-args, positionals, `(env)` declarations).
+- The value must be a non-empty string. `#true`, `#false`, `#null`, integers, floats, and the empty string `""` are parse errors.
+- A node may carry at most one `cwd=` property. A duplicate is a parse error.
+- On a profile node, `cwd=` is allowed alongside `extends=`.
+- There is no suppression form in v1 (no `cwd=#false`). Once a command-level `cwd=` is set, every selection of that command runs from somewhere; a profile may *replace* the directory but cannot opt back into the user's CWD. If this turns out to matter, it can be added post-v1.
+
+#### 2.12.2 Path resolution
+
+- **Absolute** paths are used as written.
+- **Relative** paths are resolved against the directory containing the loaded config file (the parent of `jig.kdl` / `.jig.kdl`, or the parent of an explicit `--config <PATH>`). The user's current working directory is not consulted.
+- The shorthand `cwd="."` therefore means "run from the config-file directory."
+- No tilde or environment-variable expansion is performed; symlinks and `..` segments are left to the OS to interpret at `chdir(2)` time.
+
+This anchor choice makes `jig.kdl` portable: a config that says `cwd="."` (or any path relative to the config) behaves the same whether the user invoked `jig` from the project root or a deep subdirectory, which is the whole reason for letting the config file pin the directory.
+
+#### 2.12.3 Effective cwd
+
+For a given invocation, the effective working directory is selected by:
+
+1. If a profile is selected, walk the `extends` chain from leaf to root and use the `cwd=` of the first profile that has one.
+2. Otherwise, use the command's `cwd=` if present.
+3. Otherwise no `chdir` is performed; the child inherits `jig`'s working directory (the pre-v0.8 behavior).
+
+The leaf-wins rule mirrors §2.8.5: a `cwd=` on a child profile overrides one on its parent. Because each tier supplies at most one `cwd=` value, the merge degenerates trivially to "highest tier wins, no positioning to resolve."
+
+#### 2.12.4 Application
+
+When an effective cwd is determined, `jig` arranges for the spawned child to start in that directory (in `std::process::Command` terms, this is `current_dir(<path>)`). The chdir is local to the child and happens between `fork` and `exec`; `jig` itself does not change its working directory, and the user's shell is unaffected. The env-var contributions (§3.6) and the chdir are independent — neither observes the other in the child.
+
+If the target directory does not exist or cannot be entered, the spawn fails and `jig` exits 125 (a `jig`-configuration failure per §3.5), with a diagnostic that names the path and the underlying OS error.
 
 ## 3. Command-Line Interface
 
@@ -658,6 +712,7 @@ Rationale: target commands very commonly use exit codes `1` (generic failure) an
 - `jig` exits with the child's exit status, except where overridden by the wrapper-tool exit codes in §3.5.
 - Standard streams (stdin, stdout, stderr) are inherited from `jig` to the child.
 - The child process inherits `jig`'s own environment, then any env-var outcomes from §2.11 are applied on top: a resolved "set" calls `env(NAME, value)` on the child's `Command`, and a resolved "unset" calls `env_remove(NAME)`. `jig` never wholesale-clears the inherited environment.
+- If `cwd=` resolves to an effective working directory (§2.12), `jig` sets that as the child's working directory before `exec`. Otherwise the child inherits `jig`'s working directory. `jig` itself does not change its working directory; the user's shell is unaffected. A failure to change directory (path missing, permission denied, …) aborts the spawn with exit code 125 (§3.5) and a diagnostic naming the offending path.
 - Signals (SIGINT, SIGTERM) delivered to `jig` reach the child naturally because the child is in the same process group; no explicit signal forwarding is performed by `jig` for v1.
 
 Implementation note: `std::process::Command::status()` is the appropriate Rust API. `execvp`-style replacement (`exec`) was considered but rejected because it would prevent `jig` from translating non-zero child statuses through the §3.5 exit-code conventions and would lose the ability to perform any post-execution work in the future.
@@ -680,10 +735,10 @@ Given `jig <name> [profile] [passthrough...]`:
      - If it is the selected profile, walk its children in source order, appending each to the candidate list.
      - If it is some other profile, skip.
    - Apply per-key resolution (§2.8 step 2): for each resolved CLI key, suppress per the `#false` rules (profile-side `#false` clears all default occurrences; default-side `#false` drops just itself), partition surviving entries into `+`-marked and unmarked, emit each marked entry at its source position, and resolve unmarked entries in single mode (≤ 1 on each side → v1 first-occurrence positioning with profile-value precedence) or repeat mode (otherwise → emit each unmarked at its source position).
-6. For each remaining flag, format per the flag prefix rules (§2.5). Boolean `#true` flags emit only the flag key (no accompanying value). Positionals emit their literal value.
+6. For each remaining flag, format per the flag prefix rules (§2.5). Boolean `#true` flags emit only the flag key (no accompanying value). Positionals emit their literal value. Independently, resolve the effective working directory per §2.12.3 (walk the `extends` chain leaf-to-root for a profile-side `cwd=`, then fall back to the command's `cwd=`; resolve a relative value against the directory containing the loaded config file). The working-directory channel is orthogonal to the argv channel and may be computed in either order.
 7. Append pass-through args at the end (§3.3).
 8. If `--dry-run`: print shell-quoted command line; exit 0.
-9. Otherwise: execute the resolved command. Exit with the child's exit status.
+9. Otherwise: execute the resolved command from the effective working directory (if any). Exit with the child's exit status.
 
 ## 5. Worked Examples
 
@@ -932,7 +987,6 @@ The following are deliberately deferred. None of them are precluded by the v1 de
 - Subcommand chains beyond what fits in a quoted command name.
 - `--print` variants (e.g. argv-array form vs shell-quoted form).
 - Validation of resolved commands beyond `Command::spawn` failures (e.g. proactive existence/executability checks before launching).
-- Working-directory annotations.
 
 ## 7. Resolved Design Decisions
 
@@ -946,6 +1000,7 @@ The output should be readable enough to grep and eyeball, but is not promised to
 
 ```
 llama-server (alias: serve)
+  cwd: /home/me/llama-stack
   env: -u OLD_VAR OLLAMA_HOST=0.0.0.0
   default-args: --host 0.0.0.0 --port 8090 -c 32768 --flash-attn
   profiles:
@@ -957,6 +1012,8 @@ rsync (alias: sync)
   profiles:
     backup
 ```
+
+The `cwd:` line is emitted only when the command has a `cwd=` property (§2.12). The value is shown as written in the config (an absolute path is shown absolute; a relative path is shown unchanged), not the resolved absolute path. Profile-level `cwd=` is not shown — like profile-level flag and env contributions, it is visible only via `--dry-run`.
 
 The `env:` line is emitted only when the command has env-var defaults (§2.10). It mirrors the `env(1)` form used by `--dry-run`: `-u NAME` for unsets followed by `NAME=value` for sets. Profile-level env contributions are not shown — like profile-level flag contributions, they are visible only via `--dry-run`.
 
@@ -977,7 +1034,18 @@ env [-u UNSET]... [NAME=value]... <program> <args>...
 
 Unsets come first (one `-u NAME` per name); sets follow as `NAME=value` pairs; both names and values are shell-quoted via the same rules as above. With no env contributions, the prefix is omitted entirely and the output is byte-identical to a non-env config.
 
-Example without env vars:
+When an effective working directory (§2.12) is resolved, the whole line is wrapped in a `(cd <dir> && ... )` subshell so chdir is applied without altering the caller's shell. The cwd subshell sits outside the optional `env(1)` prefix, and the path is the resolved absolute path (the config's `cwd=` value applied against the config-file directory if it was relative). The composed form is:
+
+```
+[(cd <resolved-cwd> && ]\
+  [env [-u UNSET]... [NAME=value]... ]\
+  <program> <args>...\
+[)]
+```
+
+The `(` / `)` and the `env` prefix appear together iff the corresponding feature is in use; either may be absent independently. With neither feature in use the output is byte-identical to a plain command line.
+
+Example without env vars or cwd:
 ```
 $ jig --dry-run serve qwen-coder
 llama-server --host 0.0.0.0 --port 8090 -c 32768 --flash-attn -m /models/qwen-coder.gguf -ngl 999 -ts 0.5,0.5
@@ -987,6 +1055,18 @@ Example with env vars (set + unset):
 ```
 $ jig --dry-run serve qwen-coder
 env -u OLD_VAR OLLAMA_HOST=0.0.0.0 CUDA_VISIBLE_DEVICES=0 llama-server --host 0.0.0.0 -m /models/qwen-coder.gguf
+```
+
+Example with a resolved cwd:
+```
+$ jig --dry-run serve qwen-coder
+(cd /home/me/llama-stack && llama-server --host 0.0.0.0 -m /models/qwen-coder.gguf)
+```
+
+Example with both cwd and env vars:
+```
+$ jig --dry-run serve qwen-coder
+(cd /home/me/llama-stack && env OLLAMA_HOST=0.0.0.0 llama-server --host 0.0.0.0 -m /models/qwen-coder.gguf)
 ```
 
 Argv-style (one argument per line) is **not** offered in v1. If users need to inspect quoting, they can pipe the dry-run output to a shell parser, or we can revisit later.

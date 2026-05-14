@@ -7,12 +7,6 @@ without polluting the v1 spec.
 Each entry below is a sketch, not a commitment. Some may be implemented
 in v2; others may be discarded after more thought.
 
-## Working directory
-
-`(cwd) "/some/path"` annotation on a command or profile to `chdir`
-before exec. Useful for tools that resolve relative paths against the
-working directory.
-
 ## Pre-exec validation
 
 Type annotations that perform a check before launching:

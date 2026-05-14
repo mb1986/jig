@@ -1,0 +1,7 @@
+---
+source: src/errors.rs
+assertion_line: 1173
+expression: render_for_snapshot(&err)
+---
+  × cwd path contains a NUL byte and cannot be used: "/some\0/dir"
+  help: remove the embedded NUL (typically a `\u{0}` escape) from the `cwd=` value in your jig.kdl

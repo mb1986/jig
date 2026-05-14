@@ -64,7 +64,10 @@ api-server "serve" {
         pretty #true                     // add a new flag
     }
 
-    prod {
+    // `cwd=` pins the working directory of the spawned child.
+    // Absolute paths are used as-is; relative paths resolve against
+    // the directory containing this `jig.kdl`.
+    prod cwd="/srv/api" {
         host "127.0.0.1"
         log-level "warn"
         v #false                         // suppress the default
@@ -99,7 +102,7 @@ $ jig --dry-run serve dev-trace
 env RUST_LOG='info,api=debug' api-server --host 0.0.0.0 --port 3000 --log-level trace -v -shutdown-timeout 30s --cors-origin app.dev --cors-origin admin.dev --header 'X-Service: api-dev' --pretty
 
 $ jig --dry-run serve prod
-env -u RUST_LOG api-server --host 127.0.0.1 --port 8080 --log-level warn -shutdown-timeout 30s --cors-origin app.dev --cors-origin admin.dev --header 'X-Service: api' --metrics --header 'X-Region: eu'
+(cd /srv/api && env -u RUST_LOG api-server --host 127.0.0.1 --port 8080 --log-level warn -shutdown-timeout 30s --cors-origin app.dev --cors-origin admin.dev --header 'X-Service: api' --metrics --header 'X-Region: eu')
 
 $ jig --dry-run serve tls-staging
 env RUST_LOG='info,api=debug' api-server --host 0.0.0.0 --port 8080 --log-level info -v -shutdown-timeout 30s --cors-origin app.dev --cors-origin admin.dev --header 'X-Service: api' --tls-cert /etc/ssl/staging.pem --tls-key /etc/ssl/staging.key
@@ -118,9 +121,19 @@ the same effect.
 directory and walking up through parents, stopping at `$HOME`, so it
 works from any subdirectory of a project root.
 
+A `cwd=` property on a command or profile pins the directory the
+child runs from. Absolute values are used verbatim; relative values
+resolve against the directory containing `jig.kdl`, not your current
+working directory — so `cwd="."` reliably means "from the project
+root" no matter how deep your invocation sits. A profile-level `cwd=`
+overrides the command-level one (leaf wins in an `extends` chain).
+`--dry-run` wraps the whole line in a `(cd <dir> && ...)` subshell so
+the output stays copy-pasteable.
+
 For the full grammar — argument model, prefix synthesis, profile
 inheritance, `#null` placeholders, merge semantics, env-var rules,
-constraints, and diagnostic guarantees — see [`SPEC.md`](SPEC.md).
+working-directory rules, constraints, and diagnostic guarantees —
+see [`SPEC.md`](SPEC.md).
 
 ## Usage
 

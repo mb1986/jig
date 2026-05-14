@@ -1,0 +1,7 @@
+---
+source: src/errors.rs
+assertion_line: 1151
+expression: render_for_snapshot(&err)
+---
+  × resolved cwd path is not valid UTF-8 and cannot be shell-quoted: "/some/�/dir"
+  help: this typically means the config-file directory is itself non-UTF-8; omit `--dry-run` (and `-q`) to skip rendering, or run from a UTF-8 directory

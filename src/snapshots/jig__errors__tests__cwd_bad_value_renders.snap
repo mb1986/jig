@@ -1,0 +1,12 @@
+---
+source: src/errors.rs
+assertion_line: 1129
+expression: render_for_snapshot(&err)
+---
+  × `cwd` value must be a non-empty path string
+   ╭─[jig.kdl:1:9]
+ 1 │ foo cwd=42 {}
+   ·         ─┬
+   ·          ╰── not a valid cwd value
+   ╰────
+  help: write `cwd="/abs/path"` or `cwd="rel/path"` (relative paths resolve against the config-file directory)

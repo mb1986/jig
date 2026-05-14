@@ -2043,3 +2043,365 @@ fn env_duplicate_in_defaults_exits_125() {
         .code(125)
         .stderr(predicate::str::contains("declared more than once"));
 }
+
+// --- §2.12 working directory ---
+
+#[test]
+fn cwd_dry_run_wraps_command_in_subshell() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "foo cwd=\"/opt/work\" {\n    host \"0.0.0.0\"\n}\n",
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--dry-run")
+        .arg("foo")
+        .assert()
+        .code(0)
+        .stdout("(cd /opt/work && foo --host 0.0.0.0)\n");
+}
+
+#[test]
+fn cwd_relative_resolves_to_config_dir() {
+    let dir = tempdir().unwrap();
+    let sub = dir.path().join("sub");
+    fs::create_dir(&sub).unwrap();
+    fs::write(dir.path().join("jig.kdl"), "foo cwd=\"sub\" {}\n").unwrap();
+    let expected = format!("(cd {}/sub && foo)\n", dir.path().display());
+    jig()
+        .current_dir(dir.path())
+        .arg("--dry-run")
+        .arg("foo")
+        .assert()
+        .code(0)
+        .stdout(expected);
+}
+
+#[test]
+fn cwd_profile_overrides_command_in_dry_run() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "foo cwd=\"/cmd\" {\n    fast cwd=\"/profile\" {\n        -ngl 99\n    }\n}\n",
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--dry-run")
+        .arg("foo")
+        .arg("fast")
+        .assert()
+        .code(0)
+        .stdout("(cd /profile && foo -ngl 99)\n");
+}
+
+#[test]
+fn cwd_with_env_compose_in_dry_run() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "foo cwd=\"/work\" {\n    (env)X \"1\"\n}\n",
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--dry-run")
+        .arg("foo")
+        .assert()
+        .code(0)
+        .stdout("(cd /work && env X=1 foo)\n");
+}
+
+#[test]
+fn cwd_list_shows_command_cwd_line() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "foo cwd=\"/work\" {\n    host \"0.0.0.0\"\n}\n",
+    )
+    .unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .arg("--list")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains("  cwd: /work\n"),
+        "expected cwd line; stdout: {stdout:?}"
+    );
+}
+
+#[test]
+fn cwd_list_omits_cwd_line_when_unset() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "foo {\n    host \"x\"\n}\n").unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .arg("--list")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        !stdout.contains("cwd:"),
+        "should not show cwd line; stdout: {stdout:?}"
+    );
+}
+
+#[test]
+fn cwd_list_shows_relative_path_verbatim() {
+    // §7.1: --list shows the path as written in the config.
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "foo cwd=\"sub\" {}\n").unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .arg("--list")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains("  cwd: sub\n"),
+        "expected relative path verbatim; stdout: {stdout:?}"
+    );
+}
+
+#[test]
+fn cwd_applied_to_spawn_with_pwd() {
+    // End-to-end: invoke `pwd` with cwd set, and assert its stdout
+    // is the resolved directory. This proves Command::current_dir
+    // is wired in correctly. We use the bare name (resolved through
+    // $PATH) rather than /bin/pwd because NixOS / Alpine place pwd
+    // elsewhere, but every Unix ships some `pwd` on $PATH.
+    let dir = tempdir().unwrap();
+    let target = dir.path().join("work");
+    fs::create_dir(&target).unwrap();
+    fs::write(dir.path().join("jig.kdl"), "pwd cwd=\"work\" {}\n").unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .arg("--quiet")
+        .arg("pwd")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    // macOS sometimes prefixes a tempdir with /private (a symlink).
+    // pwd resolves it; we just want the trailing /work to match.
+    assert!(
+        stdout.trim().ends_with("/work"),
+        "pwd output {stdout:?} should end in /work"
+    );
+}
+
+#[test]
+fn cwd_missing_directory_exits_125() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "\"/bin/true\" cwd=\"/this/does/not/exist\" {}\n",
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--quiet")
+        .arg("/bin/true")
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains("could not enter cwd"))
+        .stderr(predicate::str::contains("/this/does/not/exist"));
+}
+
+#[test]
+fn cwd_bad_value_exits_125_with_parse_diagnostic() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "foo cwd=42 {}\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--list")
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains("`cwd` value must be"));
+}
+
+#[test]
+fn cwd_duplicate_exits_125() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "foo cwd=\"/a\" cwd=\"/b\" {}\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--list")
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains(
+            "`cwd` is specified more than once",
+        ));
+}
+
+#[test]
+fn cwd_bare_config_filename_resolves_to_absolute_path() {
+    // §7.2: the `(cd <dir> && ...)` wrapper must use the resolved
+    // *absolute* path. When `--config jig.kdl` is passed with no
+    // directory component, the implementation must prepend the
+    // process CWD before resolving the relative `cwd=` value.
+    let dir = tempdir().unwrap();
+    let sub = dir.path().join("sub");
+    fs::create_dir(&sub).unwrap();
+    fs::write(dir.path().join("jig.kdl"), "foo cwd=\"sub\" {}\n").unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .arg("--config")
+        .arg("jig.kdl") // bare name, no directory component
+        .arg("--dry-run")
+        .arg("foo")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let trimmed = stdout.trim();
+    let inside = trimmed
+        .strip_prefix("(cd ")
+        .and_then(|s| s.split(" && ").next())
+        .expect("dry-run output should start with (cd <path> && ");
+    assert!(
+        inside.starts_with('/'),
+        "cwd path inside (cd …) should be absolute; got {inside:?} (full output: {trimmed:?})"
+    );
+    assert!(
+        inside.ends_with("/sub"),
+        "cwd path should end in /sub; got {inside:?}"
+    );
+}
+
+#[test]
+fn cwd_dry_run_quotes_shell_metacharacters() {
+    // §7.2: paths with `$`, `;`, `(`, `)`, etc. must be shell-quoted
+    // so the (cd …) wrapper round-trips through a POSIX shell.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "foo cwd=\"/work$with;meta(chars)\" {}\n",
+    )
+    .unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .arg("--dry-run")
+        .arg("foo")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(stdout, "(cd '/work$with;meta(chars)' && foo)\n");
+}
+
+#[test]
+fn cwd_pre_exec_preview_shows_subshell_wrapper() {
+    // §3.4.1: the pre-exec preview line (written to stderr before
+    // spawning) uses the same shell-quoted form as `--dry-run`, so
+    // a resolved cwd should appear there too. We use `pwd` so the
+    // command actually succeeds; stderr should carry the preview.
+    let dir = tempdir().unwrap();
+    let work = dir.path().join("work");
+    fs::create_dir(&work).unwrap();
+    fs::write(dir.path().join("jig.kdl"), "pwd cwd=\"work\" {}\n").unwrap();
+    let out = jig().current_dir(dir.path()).arg("pwd").output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("(cd "),
+        "preview should include `(cd …)`; stderr: {stderr:?}",
+    );
+    assert!(
+        stderr.contains("/work"),
+        "preview should mention /work; stderr: {stderr:?}",
+    );
+}
+
+#[test]
+fn cwd_pre_exec_preview_suppressed_under_quiet() {
+    // -q suppresses the preview; even with a cwd set, stderr stays
+    // empty (apart from anything the child writes — `pwd` writes
+    // only to stdout).
+    let dir = tempdir().unwrap();
+    let work = dir.path().join("work");
+    fs::create_dir(&work).unwrap();
+    fs::write(dir.path().join("jig.kdl"), "pwd cwd=\"work\" {}\n").unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .arg("--quiet")
+        .arg("pwd")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        !stderr.contains("(cd "),
+        "preview should be suppressed under -q; stderr: {stderr:?}",
+    );
+}
+
+#[test]
+fn cwd_with_embedded_nul_exits_125_not_panics() {
+    // KDL `\u{0}` escapes can put a NUL byte into the `cwd=` string.
+    // Previously this hit an `expect()` in the dry-run rendering and
+    // panicked the binary; it must now surface as a typed error and
+    // exit 125 (a jig-configuration failure), never as a panic.
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "foo cwd=\"a\\u{0}b\" {}\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--dry-run")
+        .arg("foo")
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains("NUL byte"))
+        .stderr(predicate::str::contains("panicked").not());
+}
+
+#[test]
+fn cwd_with_embedded_nul_live_exec_exits_125_not_panics() {
+    // Parallel to the --dry-run check above, but exercises the
+    // exec.rs path: a NUL in the cwd should be flagged as
+    // CwdContainsNul before the spawn, with no panic.
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "pwd cwd=\"a\\u{0}b\" {}\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--quiet")
+        .arg("pwd")
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains("NUL byte"))
+        .stderr(predicate::str::contains("panicked").not());
+}
+
+#[test]
+fn cwd_list_hides_profile_level_cwd() {
+    // §7.1: profile-level `cwd=` is not shown in `--list` — only the
+    // command-level value. (Profile contributions are visible via
+    // `--dry-run`.)
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "foo {\n    fast cwd=\"/profile-only\" {}\n}\n",
+    )
+    .unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .arg("--list")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        !stdout.contains("/profile-only"),
+        "profile-level cwd should not appear in --list; stdout: {stdout:?}",
+    );
+    assert!(
+        !stdout.contains("cwd:"),
+        "no command-level cwd, no cwd: line; stdout: {stdout:?}",
+    );
+}

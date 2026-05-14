@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Working directory for the spawned child (SPEC §2.12). A KDL
+  property `cwd="<path>"` on a command or profile node pins the
+  directory the child runs from. Absolute paths are used as written;
+  relative paths resolve against the directory containing the loaded
+  config file, so `cwd="."` means "run from the config-file
+  directory" and project-relative paths work no matter how deep the
+  user's current directory is. The property layers like flags: a
+  profile-side `cwd=` overrides a command-side one, and within an
+  `extends` chain the leaf wins. `--list` shows a `cwd:` line per
+  command when set, and `--dry-run` wraps the resolved invocation in
+  a `(cd <resolved-cwd> && ...)` subshell so the line is still
+  copy-pasteable. A failure to enter the target directory aborts the
+  spawn with exit code 125 and a diagnostic naming the path. No
+  suppression form is provided in v1 (a profile cannot unset its
+  command's `cwd=` to fall back to the user's CWD).
 - Pre-exec preview line (SPEC §3.4.1). Before spawning the resolved
   command, `jig` writes a single shell-quoted line to stderr showing
   exactly what it is about to run (same format as `--dry-run`,

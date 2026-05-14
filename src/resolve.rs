@@ -42,6 +42,7 @@
 //! emitted at their walk position in source order.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use crate::config::{
     Argument, Command, CommandChild, Config, EnvEntry, EnvValue, FlagMode, FlagValue,
@@ -59,6 +60,12 @@ pub struct Resolved {
     /// Env-var outcomes to apply to the spawned child, in
     /// first-occurrence walk order (`SPEC.md` §2.11).
     pub env: Vec<EnvOp>,
+    /// Effective working directory for the spawned child per
+    /// `SPEC.md` §2.12.3. `None` means inherit `jig`'s working
+    /// directory (no `cwd=` resolved). Relative `cwd=` values in
+    /// the config have already been resolved against the config
+    /// file's directory.
+    pub cwd: Option<PathBuf>,
 }
 
 /// One env-var operation to apply to the spawned child process via
@@ -82,12 +89,21 @@ pub enum EnvOp {
 
 /// Resolve `name` and optional `profile` against `config`.
 ///
+/// `config_dir` is the directory containing the loaded config file
+/// (provided by [`crate::config::load`]). It is used as the anchor
+/// for relative `cwd=` values per `SPEC.md` §2.12.2.
+///
 /// # Errors
 ///
 /// Returns [`Error::UnknownCommand`] if no command matches the
 /// name or alias, or [`Error::UnknownProfile`] if `profile` does
 /// not exist on the matched command.
-pub fn resolve(config: &Config, name: &str, profile: Option<&str>) -> Result<Resolved> {
+pub fn resolve(
+    config: &Config,
+    name: &str,
+    profile: Option<&str>,
+    config_dir: &Path,
+) -> Result<Resolved> {
     let cmd = lookup_command(config, name)?;
     let selected_profile = match profile {
         None => None,
@@ -184,11 +200,49 @@ pub fn resolve(config: &Config, name: &str, profile: Option<&str>) -> Result<Res
         }
     }
 
+    let cwd = effective_cwd(cmd, &chain, config_dir);
+
     Ok(Resolved {
         program: cmd.name.clone(),
         args: out,
         env,
+        cwd,
     })
+}
+
+/// Compute the effective working directory per `SPEC.md` §2.12.3.
+///
+/// Walks the `extends` chain leaf → root looking for a profile-side
+/// `cwd=`; falls back to the command's `cwd=` if no profile in the
+/// chain supplied one. Relative values are resolved against
+/// `config_dir`; absolute values are used as written.
+fn effective_cwd(cmd: &Command, chain: &[&str], config_dir: &Path) -> Option<PathBuf> {
+    // chain is ordered [root, …, leaf]; walk leaf-first.
+    for profile_name in chain.iter().rev() {
+        let cwd = cmd.children.iter().find_map(|c| match c {
+            CommandChild::Profile { name, cwd, .. } if name == *profile_name => cwd.as_ref(),
+            _ => None,
+        });
+        if let Some((path, _)) = cwd {
+            return Some(resolve_cwd_path(path, config_dir));
+        }
+    }
+    cmd.cwd
+        .as_ref()
+        .map(|(path, _)| resolve_cwd_path(path, config_dir))
+}
+
+/// Resolve a `cwd=` value to an absolute path. Absolute values are
+/// used unchanged; relative values are joined onto `config_dir` per
+/// `SPEC.md` §2.12.2. No symlink resolution or `..` normalisation is
+/// performed — `chdir(2)` interprets the path at exec time.
+fn resolve_cwd_path(value: &str, config_dir: &Path) -> PathBuf {
+    let p = Path::new(value);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        config_dir.join(p)
+    }
 }
 
 /// Resolve env-var outcomes per `SPEC.md` §2.11 / §2.8.5. The slices
@@ -547,14 +601,14 @@ mod tests {
     #[test]
     fn lookup_by_command_name() {
         let cfg = parse("llama-server \"serve\" {\n  host \"0.0.0.0\"\n}\n");
-        let r = resolve(&cfg, "llama-server", None).unwrap();
+        let r = resolve(&cfg, "llama-server", None, Path::new(".")).unwrap();
         assert_eq!(r.program, "llama-server");
     }
 
     #[test]
     fn lookup_by_alias() {
         let cfg = parse("llama-server \"serve\" {\n  host \"0.0.0.0\"\n}\n");
-        let r = resolve(&cfg, "serve", None).unwrap();
+        let r = resolve(&cfg, "serve", None, Path::new(".")).unwrap();
         assert_eq!(r.program, "llama-server");
     }
 
@@ -568,11 +622,11 @@ mod tests {
                 b #true
             }"#,
         );
-        let r = resolve(&cfg, "serve1", None).unwrap();
+        let r = resolve(&cfg, "serve1", None, Path::new(".")).unwrap();
         assert_eq!(r.program, "llama-server");
         assert_eq!(flatten(&r), vec![("-a".into(), String::new())]);
 
-        let r = resolve(&cfg, "serve2", None).unwrap();
+        let r = resolve(&cfg, "serve2", None, Path::new(".")).unwrap();
         assert_eq!(r.program, "llama-server");
         assert_eq!(flatten(&r), vec![("-b".into(), String::new())]);
     }
@@ -583,7 +637,7 @@ mod tests {
             r#"llama-server "serve1" { a #true }
             llama-server "serve2" { b #true }"#,
         );
-        let err = resolve(&cfg, "llama-server", None).unwrap_err();
+        let err = resolve(&cfg, "llama-server", None, Path::new(".")).unwrap_err();
         let Error::AmbiguousCommand { name, help } = err else {
             panic!("expected AmbiguousCommand");
         };
@@ -599,7 +653,7 @@ mod tests {
             foo "b" {}
             foo "c" {}"#,
         );
-        let err = resolve(&cfg, "foo", None).unwrap_err();
+        let err = resolve(&cfg, "foo", None, Path::new(".")).unwrap_err();
         let Error::AmbiguousCommand { help, .. } = err else {
             panic!("expected AmbiguousCommand");
         };
@@ -617,7 +671,7 @@ mod tests {
             r#"foo "f1" {}
             foo "f2" {}"#,
         );
-        let err = resolve(&cfg, "fop", None).unwrap_err();
+        let err = resolve(&cfg, "fop", None, Path::new(".")).unwrap_err();
         let Error::UnknownCommand { help, .. } = err else {
             panic!("expected UnknownCommand");
         };
@@ -630,7 +684,7 @@ mod tests {
     #[test]
     fn unknown_command_with_did_you_mean() {
         let cfg = parse("llama-server {}\ngemma-server {}\n");
-        let err = resolve(&cfg, "llama-servr", None).unwrap_err();
+        let err = resolve(&cfg, "llama-servr", None, Path::new(".")).unwrap_err();
         let Error::UnknownCommand { name, help } = err else {
             panic!("expected UnknownCommand");
         };
@@ -642,7 +696,7 @@ mod tests {
     #[test]
     fn unknown_profile_with_available_list() {
         let cfg = parse("foo {\n  fast {}\n  slow {}\n}\n");
-        let err = resolve(&cfg, "foo", Some("medium")).unwrap_err();
+        let err = resolve(&cfg, "foo", Some("medium"), Path::new(".")).unwrap_err();
         let Error::UnknownProfile {
             profile,
             command,
@@ -677,7 +731,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "serve", None).unwrap();
+        let r = resolve(&cfg, "serve", None, Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![
@@ -704,7 +758,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "serve", Some("qwen-coder")).unwrap();
+        let r = resolve(&cfg, "serve", Some("qwen-coder"), Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![
@@ -731,7 +785,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "serve", Some("llama3")).unwrap();
+        let r = resolve(&cfg, "serve", Some("llama3"), Path::new(".")).unwrap();
         // `--port` keeps its default position (between host and the
         // profile's own contributions), but takes the profile's value.
         assert_eq!(
@@ -757,7 +811,7 @@ mod tests {
                 }
             }",
         );
-        let r = resolve(&cfg, "some-tool", Some("fast")).unwrap();
+        let r = resolve(&cfg, "some-tool", Some("fast"), Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![
@@ -778,7 +832,7 @@ mod tests {
                 verbose #true
             }",
         );
-        let r = resolve(&cfg, "some-tool", Some("fast")).unwrap();
+        let r = resolve(&cfg, "some-tool", Some("fast"), Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![
@@ -806,7 +860,7 @@ mod tests {
                 timeout 10
             }",
         );
-        let r = resolve(&cfg, "some-tool", Some("fast")).unwrap();
+        let r = resolve(&cfg, "some-tool", Some("fast"), Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![
@@ -835,7 +889,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "some-tool", Some("profile-c")).unwrap();
+        let r = resolve(&cfg, "some-tool", Some("profile-c"), Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![
@@ -862,7 +916,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "some-tool", Some("quiet")).unwrap();
+        let r = resolve(&cfg, "some-tool", Some("quiet"), Path::new(".")).unwrap();
         assert_eq!(flatten(&r), Vec::<(String, String)>::new());
     }
 
@@ -879,7 +933,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "some-tool", Some("loud")).unwrap();
+        let r = resolve(&cfg, "some-tool", Some("loud"), Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![
@@ -900,7 +954,7 @@ mod tests {
                 flag-form { xxx #true }
             }"#,
         );
-        let r = resolve(&cfg, "some-tool", Some("flag-form")).unwrap();
+        let r = resolve(&cfg, "some-tool", Some("flag-form"), Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![
@@ -921,7 +975,7 @@ mod tests {
                 no-log { log-file #false }
             }"#,
         );
-        let r = resolve(&cfg, "some-tool", Some("no-log")).unwrap();
+        let r = resolve(&cfg, "some-tool", Some("no-log"), Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![
@@ -944,7 +998,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "transcode", Some("h264")).unwrap();
+        let r = resolve(&cfg, "transcode", Some("h264"), Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![
@@ -966,7 +1020,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "git", Some("clone-myrepo")).unwrap();
+        let r = resolve(&cfg, "git", Some("clone-myrepo"), Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![
@@ -991,9 +1045,9 @@ mod tests {
                 }
             }"#,
         );
-        let r1 = resolve(&cfg, "mytool", Some("enabled-true")).unwrap();
+        let r1 = resolve(&cfg, "mytool", Some("enabled-true"), Path::new(".")).unwrap();
         assert_eq!(flatten(&r1), vec![("--enabled".into(), "true".into())]);
-        let r2 = resolve(&cfg, "mytool", Some("enabled-flag")).unwrap();
+        let r2 = resolve(&cfg, "mytool", Some("enabled-flag"), Path::new(".")).unwrap();
         assert_eq!(flatten(&r2), vec![("--enabled".into(), String::new())]);
     }
 
@@ -1002,7 +1056,7 @@ mod tests {
     #[test]
     fn did_you_mean_off_by_two_is_caught() {
         let cfg = parse(r"qwen-coder {}");
-        let err = resolve(&cfg, "qwen-codr", None).unwrap_err();
+        let err = resolve(&cfg, "qwen-codr", None, Path::new(".")).unwrap_err();
         let Error::UnknownCommand { help, .. } = err else {
             panic!();
         };
@@ -1012,7 +1066,7 @@ mod tests {
     #[test]
     fn did_you_mean_returns_none_for_completely_different_input() {
         let cfg = parse(r"qwen-coder {}");
-        let err = resolve(&cfg, "totally-unrelated", None).unwrap_err();
+        let err = resolve(&cfg, "totally-unrelated", None, Path::new(".")).unwrap_err();
         let Error::UnknownCommand { help, .. } = err else {
             panic!();
         };
@@ -1023,7 +1077,7 @@ mod tests {
     fn flag_key_field_used() {
         // Sanity-check that resolve preserves FlagKey distinctions.
         let cfg = parse("foo {\n  -ngl 999\n  verbose #true\n}\n");
-        let r = resolve(&cfg, "foo", None).unwrap();
+        let r = resolve(&cfg, "foo", None, Path::new(".")).unwrap();
         let Argument::Flag { key, .. } = &r.args[0] else {
             panic!();
         };
@@ -1042,7 +1096,7 @@ mod tests {
                 I "/opt/include"
             }"#,
         );
-        let r = resolve(&cfg, "gcc", None).unwrap();
+        let r = resolve(&cfg, "gcc", None, Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![
@@ -1062,7 +1116,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "curl", Some("with-headers")).unwrap();
+        let r = resolve(&cfg, "curl", Some("with-headers"), Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![
@@ -1083,7 +1137,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "gcc", Some("project-a")).unwrap();
+        let r = resolve(&cfg, "gcc", Some("project-a"), Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![
@@ -1107,7 +1161,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "gcc", Some("add-two")).unwrap();
+        let r = resolve(&cfg, "gcc", Some("add-two"), Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![
@@ -1128,7 +1182,7 @@ mod tests {
                 v #true
             }",
         );
-        let r = resolve(&cfg, "some-tool", None).unwrap();
+        let r = resolve(&cfg, "some-tool", None, Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![
@@ -1152,7 +1206,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "gcc", Some("bare")).unwrap();
+        let r = resolve(&cfg, "gcc", Some("bare"), Path::new(".")).unwrap();
         assert_eq!(flatten(&r), Vec::<(String, String)>::new());
     }
 
@@ -1169,7 +1223,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "gcc", Some("custom")).unwrap();
+        let r = resolve(&cfg, "gcc", Some("custom"), Path::new(".")).unwrap();
         // After clear+add, we're left with one profile occurrence —
         // single mode emits it at the profile's position.
         assert_eq!(flatten(&r), vec![("-I".into(), "/mine".into())]);
@@ -1184,7 +1238,7 @@ mod tests {
                 I "/b"
             }"#,
         );
-        let r = resolve(&cfg, "gcc", None).unwrap();
+        let r = resolve(&cfg, "gcc", None, Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![("-I".into(), "/a".into()), ("-I".into(), "/b".into()),]
@@ -1205,7 +1259,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "gcc", Some("proj-extras")).unwrap();
+        let r = resolve(&cfg, "gcc", Some("proj-extras"), Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![
@@ -1227,7 +1281,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "gcc", Some("proj-replace")).unwrap();
+        let r = resolve(&cfg, "gcc", Some("proj-replace"), Path::new(".")).unwrap();
         assert_eq!(flatten(&r), vec![("-I".into(), "/proj/include".into())]);
     }
 
@@ -1245,7 +1299,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "gcc", Some("mixed")).unwrap();
+        let r = resolve(&cfg, "gcc", Some("mixed"), Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![
@@ -1269,7 +1323,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "gcc", Some("proj")).unwrap();
+        let r = resolve(&cfg, "gcc", Some("proj"), Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![
@@ -1292,7 +1346,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "gcc", Some("bare")).unwrap();
+        let r = resolve(&cfg, "gcc", Some("bare"), Path::new(".")).unwrap();
         assert_eq!(flatten(&r), Vec::<(String, String)>::new());
     }
 
@@ -1307,7 +1361,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("proj")).unwrap();
+        let r = resolve(&cfg, "foo", Some("proj"), Path::new(".")).unwrap();
         assert_eq!(flatten(&r), vec![("-I".into(), "/proj".into())]);
     }
 
@@ -1324,7 +1378,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("proj")).unwrap();
+        let r = resolve(&cfg, "foo", Some("proj"), Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![("-I".into(), "/a".into()), ("-I".into(), "/b".into()),]
@@ -1336,7 +1390,7 @@ mod tests {
         // `+` in defaults with no profile selected is harmless: only
         // entry, emits at its own position.
         let cfg = parse(r#"foo { +I "/dflt" }"#);
-        let r = resolve(&cfg, "foo", None).unwrap();
+        let r = resolve(&cfg, "foo", None, Path::new(".")).unwrap();
         assert_eq!(flatten(&r), vec![("-I".into(), "/dflt".into())]);
     }
 
@@ -1352,7 +1406,7 @@ mod tests {
                 }
             }",
         );
-        let r = resolve(&cfg, "foo", Some("more")).unwrap();
+        let r = resolve(&cfg, "foo", Some("more"), Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![("-v".into(), String::new()), ("-v".into(), String::new()),]
@@ -1371,7 +1425,7 @@ mod tests {
                 --host "b"
             }"#,
         );
-        let r = resolve(&cfg, "foo", None).unwrap();
+        let r = resolve(&cfg, "foo", None, Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![("--host".into(), "a".into()), ("--host".into(), "b".into()),]
@@ -1388,7 +1442,7 @@ mod tests {
                 (env)B "2"
             }"#,
         );
-        let r = resolve(&cfg, "foo", None).unwrap();
+        let r = resolve(&cfg, "foo", None, Path::new(".")).unwrap();
         assert_eq!(
             r.env,
             vec![
@@ -1413,7 +1467,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("fast")).unwrap();
+        let r = resolve(&cfg, "foo", Some("fast"), Path::new(".")).unwrap();
         assert_eq!(
             r.env,
             vec![EnvOp::Set {
@@ -1433,7 +1487,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("fast")).unwrap();
+        let r = resolve(&cfg, "foo", Some("fast"), Path::new(".")).unwrap();
         assert_eq!(
             r.env,
             vec![EnvOp::Set {
@@ -1453,7 +1507,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("clear")).unwrap();
+        let r = resolve(&cfg, "foo", Some("clear"), Path::new(".")).unwrap();
         assert_eq!(r.env, vec![EnvOp::Unset { name: "A".into() }]);
     }
 
@@ -1464,7 +1518,7 @@ mod tests {
                 (env)PATH #false
             }",
         );
-        let r = resolve(&cfg, "foo", None).unwrap();
+        let r = resolve(&cfg, "foo", None, Path::new(".")).unwrap();
         assert_eq!(
             r.env,
             vec![EnvOp::Unset {
@@ -1486,7 +1540,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("fast")).unwrap();
+        let r = resolve(&cfg, "foo", Some("fast"), Path::new(".")).unwrap();
         assert_eq!(
             r.env,
             vec![EnvOp::Set {
@@ -1501,7 +1555,7 @@ mod tests {
         // `""` is a meaningful POSIX env value (set, but empty),
         // distinct from `#false` (unset). Pin that we don't drop it.
         let cfg = parse(r#"foo { (env)A "" }"#);
-        let r = resolve(&cfg, "foo", None).unwrap();
+        let r = resolve(&cfg, "foo", None, Path::new(".")).unwrap();
         assert_eq!(
             r.env,
             vec![EnvOp::Set {
@@ -1526,7 +1580,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("fast")).unwrap();
+        let r = resolve(&cfg, "foo", Some("fast"), Path::new(".")).unwrap();
         assert_eq!(
             r.env,
             vec![
@@ -1555,7 +1609,7 @@ mod tests {
                 (env)OLLAMA_HOST "1"
             }"#,
         );
-        let r = resolve(&cfg, "foo", None).unwrap();
+        let r = resolve(&cfg, "foo", None, Path::new(".")).unwrap();
         assert_eq!(flatten(&r), vec![("--host".into(), "0.0.0.0".into())]);
         assert_eq!(r.env.len(), 1);
     }
@@ -1577,7 +1631,7 @@ mod tests {
                 }
             }",
         );
-        let r = resolve(&cfg, "foo", Some("medium")).unwrap();
+        let r = resolve(&cfg, "foo", Some("medium"), Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![("-v".into(), String::new()), ("-v".into(), String::new()),]
@@ -1612,7 +1666,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("qwen-coder-large")).unwrap();
+        let r = resolve(&cfg, "foo", Some("qwen-coder-large"), Path::new(".")).unwrap();
         // `m`: parent (tier 1, idx 0) + child (tier 2, idx 2). Each
         // tier has ≤ 1 → single mode. Highest-tier value (child's
         // `/p2`) wins; earliest idx is the parent's slot (0).
@@ -1632,7 +1686,7 @@ mod tests {
                 child extends="parent" { x "from-child" }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        let r = resolve(&cfg, "foo", Some("child"), Path::new(".")).unwrap();
         assert_eq!(flatten(&r), vec![("-x".into(), "from-child".into())]);
     }
 
@@ -1647,7 +1701,7 @@ mod tests {
                 child extends="parent" { x "from-child" }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("parent")).unwrap();
+        let r = resolve(&cfg, "foo", Some("parent"), Path::new(".")).unwrap();
         assert_eq!(flatten(&r), vec![("-x".into(), "from-parent".into())]);
     }
 
@@ -1662,7 +1716,7 @@ mod tests {
                 sibling extends="parent" { z "from-sibling" }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        let r = resolve(&cfg, "foo", Some("child"), Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![
@@ -1682,7 +1736,7 @@ mod tests {
                 parent { x "from-parent" }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        let r = resolve(&cfg, "foo", Some("child"), Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![
@@ -1702,7 +1756,7 @@ mod tests {
                 child extends="parent" { x "from-child" }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        let r = resolve(&cfg, "foo", Some("child"), Path::new(".")).unwrap();
         // For `x`: tier-2 `#false` clears tier 0 + tier 1. Tier 3
         // (`from-child`) survives; single mode emits it.
         assert_eq!(flatten(&r), vec![("-x".into(), "from-child".into())]);
@@ -1723,7 +1777,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        let r = resolve(&cfg, "foo", Some("child"), Path::new(".")).unwrap();
         assert_eq!(flatten(&r), Vec::<(String, String)>::new());
     }
 
@@ -1739,7 +1793,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        let r = resolve(&cfg, "foo", Some("child"), Path::new(".")).unwrap();
         // Parent `+I /extra` emits at its own slot (idx 0); child
         // unmarked `I /main` collapses (each tier has 1 unmarked
         // ⇒ single mode), value from highest tier, position at
@@ -1764,7 +1818,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "gcc", Some("child")).unwrap();
+        let r = resolve(&cfg, "gcc", Some("child"), Path::new(".")).unwrap();
         // Tier 1 has 1 unmarked `I`, tier 2 has 2 → not all ≤ 1 →
         // repeat mode. Every unmarked emits at its own position.
         assert_eq!(
@@ -1787,7 +1841,7 @@ mod tests {
                 child extends="parent" { I "/c" }
             }"#,
         );
-        let r = resolve(&cfg, "gcc", Some("child")).unwrap();
+        let r = resolve(&cfg, "gcc", Some("child"), Path::new(".")).unwrap();
         // Tier 0 has 2 unmarked → repeat mode triggered. All four
         // unmarked entries emit at their own position.
         assert_eq!(
@@ -1822,7 +1876,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        let r = resolve(&cfg, "foo", Some("child"), Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![
@@ -1842,7 +1896,7 @@ mod tests {
                 child extends="parent" { (env)A "from-leaf" }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        let r = resolve(&cfg, "foo", Some("child"), Path::new(".")).unwrap();
         assert_eq!(
             r.env,
             vec![EnvOp::Set {
@@ -1860,7 +1914,7 @@ mod tests {
                 child extends="parent" { (env)A #false }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        let r = resolve(&cfg, "foo", Some("child"), Path::new(".")).unwrap();
         assert_eq!(r.env, vec![EnvOp::Unset { name: "A".into() }]);
     }
 
@@ -1873,7 +1927,7 @@ mod tests {
                 child extends="parent" {}
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        let r = resolve(&cfg, "foo", Some("child"), Path::new(".")).unwrap();
         assert_eq!(
             r.env,
             vec![
@@ -1904,7 +1958,7 @@ mod tests {
                 }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        let r = resolve(&cfg, "foo", Some("child"), Path::new(".")).unwrap();
         // A: defaults → parent → child. Highest tier (child) wins.
         // B: only in defaults.
         // C: only in parent.
@@ -1944,7 +1998,7 @@ mod tests {
                 leaf extends="grandchild" { x #false }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("leaf")).unwrap();
+        let r = resolve(&cfg, "foo", Some("leaf"), Path::new(".")).unwrap();
         assert_eq!(flatten(&r), Vec::<(String, String)>::new());
     }
 
@@ -1961,7 +2015,7 @@ mod tests {
                 child extends="parent" { +x #false }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        let r = resolve(&cfg, "foo", Some("child"), Path::new(".")).unwrap();
         assert_eq!(flatten(&r), Vec::<(String, String)>::new());
     }
 
@@ -1981,7 +2035,7 @@ mod tests {
                 child extends="parent" { z "from-child" }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        let r = resolve(&cfg, "foo", Some("child"), Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![
@@ -2004,7 +2058,7 @@ mod tests {
                 b 123
             }",
         );
-        let r = resolve(&cfg, "foo", None).unwrap();
+        let r = resolve(&cfg, "foo", None, Path::new(".")).unwrap();
         assert_eq!(flatten(&r), vec![("-b".into(), "123".into())]);
     }
 
@@ -2020,7 +2074,7 @@ mod tests {
                 p { a "x" }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("p")).unwrap();
+        let r = resolve(&cfg, "foo", Some("p"), Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![("-a".into(), "x".into()), ("-b".into(), "123".into())]
@@ -2039,7 +2093,7 @@ mod tests {
                 p { a "y" }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("p")).unwrap();
+        let r = resolve(&cfg, "foo", Some("p"), Path::new(".")).unwrap();
         // Tier 0 has one survivor (`"x"` at idx 0). Tier 1 has one
         // survivor (`"y"` at idx 2). The `#null` at idx 1 is a ghost.
         // Single mode: earliest survivor idx is 0, highest-tier
@@ -2056,7 +2110,7 @@ mod tests {
                 p { a #null }
             }",
         );
-        let r = resolve(&cfg, "foo", Some("p")).unwrap();
+        let r = resolve(&cfg, "foo", Some("p"), Path::new(".")).unwrap();
         assert_eq!(flatten(&r), Vec::<(String, String)>::new());
     }
 
@@ -2070,7 +2124,7 @@ mod tests {
                 p { a #null }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("p")).unwrap();
+        let r = resolve(&cfg, "foo", Some("p"), Path::new(".")).unwrap();
         assert_eq!(flatten(&r), vec![("-a".into(), "x".into())]);
     }
 
@@ -2086,7 +2140,7 @@ mod tests {
                 p { a #null }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("p")).unwrap();
+        let r = resolve(&cfg, "foo", Some("p"), Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![("-a".into(), "x".into()), ("-a".into(), "y".into())]
@@ -2104,7 +2158,7 @@ mod tests {
                 bare { a #null }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("bare")).unwrap();
+        let r = resolve(&cfg, "foo", Some("bare"), Path::new(".")).unwrap();
         assert_eq!(
             flatten(&r),
             vec![("-a".into(), "x".into()), ("-a".into(), "y".into())]
@@ -2124,7 +2178,7 @@ mod tests {
                 child extends="parent" {}
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        let r = resolve(&cfg, "foo", Some("child"), Path::new(".")).unwrap();
         assert_eq!(flatten(&r), vec![("-a".into(), "p".into())]);
     }
 
@@ -2139,7 +2193,7 @@ mod tests {
                 child extends="parent" { a #null }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("child")).unwrap();
+        let r = resolve(&cfg, "foo", Some("child"), Path::new(".")).unwrap();
         assert_eq!(flatten(&r), vec![("-a".into(), "x".into())]);
     }
 
@@ -2155,7 +2209,7 @@ mod tests {
                 proj { +a "/extra" }
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("proj")).unwrap();
+        let r = resolve(&cfg, "foo", Some("proj"), Path::new(".")).unwrap();
         // The `+`-marked entry is at candidate idx 1 (after the
         // tier-0 ghost at idx 0). It emits at idx 1, not idx 0.
         // Output order from a single-flag config is just `-a /extra`.
@@ -2174,7 +2228,7 @@ mod tests {
                 p {}
             }"#,
         );
-        let r = resolve(&cfg, "foo", Some("p")).unwrap();
+        let r = resolve(&cfg, "foo", Some("p"), Path::new(".")).unwrap();
         assert_eq!(flatten(&r), vec![("-a".into(), "x".into())]);
     }
 
@@ -2190,7 +2244,107 @@ mod tests {
                 bare { a #false }
             }",
         );
-        let r = resolve(&cfg, "foo", Some("bare")).unwrap();
+        let r = resolve(&cfg, "foo", Some("bare"), Path::new(".")).unwrap();
         assert_eq!(flatten(&r), Vec::<(String, String)>::new());
+    }
+
+    // --- §2.12 effective cwd ---
+
+    #[test]
+    fn cwd_none_without_property() {
+        let cfg = parse(r#"foo { host "0.0.0.0" }"#);
+        let r = resolve(&cfg, "foo", None, Path::new("/anchor")).unwrap();
+        assert!(r.cwd.is_none());
+    }
+
+    #[test]
+    fn cwd_command_absolute_used_as_is() {
+        let cfg = parse(r#"foo cwd="/abs" {}"#);
+        let r = resolve(&cfg, "foo", None, Path::new("/anchor")).unwrap();
+        assert_eq!(r.cwd, Some(PathBuf::from("/abs")));
+    }
+
+    #[test]
+    fn cwd_command_relative_anchored_to_config_dir() {
+        let cfg = parse(r#"foo cwd="src" {}"#);
+        let r = resolve(&cfg, "foo", None, Path::new("/proj")).unwrap();
+        assert_eq!(r.cwd, Some(PathBuf::from("/proj/src")));
+    }
+
+    #[test]
+    fn cwd_dot_resolves_to_config_dir() {
+        let cfg = parse(r#"foo cwd="." {}"#);
+        let r = resolve(&cfg, "foo", None, Path::new("/proj")).unwrap();
+        assert_eq!(r.cwd, Some(PathBuf::from("/proj/.")));
+    }
+
+    #[test]
+    fn cwd_profile_overrides_command() {
+        let cfg = parse(
+            r#"foo cwd="/cmd" {
+                fast cwd="/profile" {}
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("fast"), Path::new("/anchor")).unwrap();
+        assert_eq!(r.cwd, Some(PathBuf::from("/profile")));
+    }
+
+    #[test]
+    fn cwd_profile_without_cwd_inherits_command() {
+        let cfg = parse(
+            r#"foo cwd="/cmd" {
+                fast {}
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("fast"), Path::new("/anchor")).unwrap();
+        assert_eq!(r.cwd, Some(PathBuf::from("/cmd")));
+    }
+
+    #[test]
+    fn cwd_extends_chain_leaf_wins() {
+        let cfg = parse(
+            r#"foo {
+                grand cwd="/grand" {}
+                parent extends="grand" cwd="/parent" {}
+                child extends="parent" cwd="/child" {}
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("child"), Path::new("/anchor")).unwrap();
+        assert_eq!(r.cwd, Some(PathBuf::from("/child")));
+    }
+
+    #[test]
+    fn cwd_extends_chain_inherits_from_ancestor_when_leaf_missing() {
+        // The leaf has no cwd; walking the chain leaf-to-root picks
+        // up the parent's cwd before falling all the way back to the
+        // command's.
+        let cfg = parse(
+            r#"foo cwd="/cmd" {
+                parent cwd="/parent" {}
+                child extends="parent" {}
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("child"), Path::new("/anchor")).unwrap();
+        assert_eq!(r.cwd, Some(PathBuf::from("/parent")));
+    }
+
+    #[test]
+    fn cwd_relative_on_profile_uses_same_anchor() {
+        // The anchor for relative paths is always the config-file
+        // directory, regardless of which tier supplied the value.
+        let cfg = parse(
+            r#"foo {
+                fast cwd="rel" {}
+            }"#,
+        );
+        let r = resolve(&cfg, "foo", Some("fast"), Path::new("/anchor")).unwrap();
+        assert_eq!(r.cwd, Some(PathBuf::from("/anchor/rel")));
+    }
+
+    #[test]
+    fn cwd_no_profile_selected_uses_command_value() {
+        let cfg = parse(r#"foo cwd="here" { fast cwd="there" {} }"#);
+        let r = resolve(&cfg, "foo", None, Path::new("/proj")).unwrap();
+        assert_eq!(r.cwd, Some(PathBuf::from("/proj/here")));
     }
 }

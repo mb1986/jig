@@ -404,13 +404,98 @@ pub enum Error {
         command_span: SourceSpan,
     },
 
-    /// A profile node carries a KDL property other than `extends`.
-    /// Per `SPEC.md` §2.8.5 only the `extends` property is recognised
-    /// on a profile (it names the parent for inheritance); every
-    /// other property is rejected at parse time.
+    /// A `cwd="<path>"` property carries a non-string value or an
+    /// empty string. Per `SPEC.md` §2.12 the value must be a
+    /// non-empty path string.
+    #[error("`cwd` value must be a non-empty path string")]
+    #[diagnostic(help(
+        "write `cwd=\"/abs/path\"` or `cwd=\"rel/path\"` (relative paths resolve against the config-file directory)"
+    ))]
+    CwdBadValue {
+        /// Source the span points into.
+        #[source_code]
+        src: NamedSource<String>,
+        /// Span of the offending value entry.
+        #[label("not a valid cwd value")]
+        span: SourceSpan,
+    },
+
+    /// A node carried more than one `cwd=` property. Per `SPEC.md`
+    /// §2.9 / §2.12 each command and profile node may have at most
+    /// one.
+    #[error("`cwd` is specified more than once on this node")]
+    #[diagnostic(help(
+        "remove one of the `cwd=` properties; a node may declare the working directory at most once"
+    ))]
+    DuplicateCwd {
+        /// Source the spans point into.
+        #[source_code]
+        src: NamedSource<String>,
+        /// Span of the first `cwd=` site.
+        #[label("first `cwd` here")]
+        first: SourceSpan,
+        /// Span of the second `cwd=` site.
+        #[label("also here")]
+        second: SourceSpan,
+    },
+
+    /// A resolved cwd path is not valid UTF-8 and so cannot be shell-
+    /// quoted for `--dry-run` (or the pre-exec preview). This happens
+    /// when the config-file directory itself is non-UTF-8 (e.g. the
+    /// user invoked `jig` from a directory whose name is not valid
+    /// UTF-8). Execution itself does not require UTF-8 — only the
+    /// shell-quoted preview / dry-run rendering does.
+    #[error("resolved cwd path is not valid UTF-8 and cannot be shell-quoted: {lossy:?}")]
+    #[diagnostic(help(
+        "this typically means the config-file directory is itself non-UTF-8; omit `--dry-run` (and `-q`) to skip rendering, or run from a UTF-8 directory"
+    ))]
+    CwdNotUtf8 {
+        /// Lossy rendering of the offending path, for diagnostic
+        /// purposes only — never emitted into the dry-run line.
+        lossy: String,
+    },
+
+    /// A resolved cwd path contains a NUL byte and so cannot be
+    /// shell-quoted for `--dry-run` (or the pre-exec preview). KDL
+    /// string escapes (`\u{0}`) make this reachable from user input,
+    /// even though a Unix filesystem path itself cannot contain a
+    /// NUL. Execution would also fail when `Command::current_dir`
+    /// builds its `CString`, but we surface the error earlier and
+    /// with a clearer message via this variant.
+    #[error("cwd path contains a NUL byte and cannot be used: {path:?}")]
+    #[diagnostic(help(
+        "remove the embedded NUL (typically a `\\u{{0}}` escape) from the `cwd=` value in your jig.kdl"
+    ))]
+    CwdContainsNul {
+        /// The offending path as written / resolved.
+        path: String,
+    },
+
+    /// A `cwd=` property was found at runtime to point at a directory
+    /// that cannot be used as the child's working directory (does not
+    /// exist, not a directory, permission denied, …). Detected when
+    /// the spawn fails after `Command::current_dir` was set. Maps to
+    /// exit code 125 per `SPEC.md` §3.5 / §2.12.
+    #[error("could not enter cwd {path:?}: {source}")]
+    #[diagnostic(help(
+        "check that the path exists, is a directory, and is reachable; relative paths in `cwd=` resolve against the config-file directory"
+    ))]
+    CwdNotUsable {
+        /// The resolved path (after applying the config-file-directory
+        /// anchor, if relative).
+        path: PathBuf,
+        /// The underlying I/O error from the spawn attempt.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// A profile node carries a KDL property other than `extends`
+    /// or `cwd`. Per `SPEC.md` §2.8.5 and §2.12 these are the only
+    /// recognised properties on a profile node; every other property
+    /// is rejected at parse time.
     #[error("unsupported property {name:?} on profile node")]
     #[diagnostic(help(
-        "only the `extends` property is allowed on a profile node (e.g. `child extends=\"parent\" {{ ... }}`); remove this property or rename it to `extends`"
+        "the allowed properties on a profile node are `extends=\"<parent>\"` (parent for inheritance) and `cwd=\"<path>\"` (working directory); remove this property or rename it"
     ))]
     UnsupportedPropertyOnProfile {
         /// The offending property name.
@@ -663,6 +748,11 @@ impl Error {
             | Self::DuplicateCommandWithoutAlias { .. }
             | Self::DuplicateAlias { .. }
             | Self::CommandAliasCollision { .. }
+            | Self::CwdBadValue { .. }
+            | Self::DuplicateCwd { .. }
+            | Self::CwdNotUtf8 { .. }
+            | Self::CwdContainsNul { .. }
+            | Self::CwdNotUsable { .. }
             | Self::UnsupportedPropertyOnProfile { .. }
             | Self::ProfileExtendsBadValue { .. }
             | Self::DuplicateProfileExtends { .. }
@@ -1042,6 +1132,52 @@ mod tests {
                 "foo {\n  a extends=\"b\" {}\n  b extends=\"a\" {}\n}\n".to_string(),
             ),
             spans: vec![SourceSpan::from((18, 3)), SourceSpan::from((36, 3))],
+        };
+        insta::assert_snapshot!(render_for_snapshot(&err));
+    }
+
+    #[test]
+    fn cwd_bad_value_renders() {
+        let src = NamedSource::new("jig.kdl", "foo cwd=42 {}\n".to_string());
+        let err = Error::CwdBadValue {
+            src,
+            span: SourceSpan::from((8, 2)),
+        };
+        insta::assert_snapshot!(render_for_snapshot(&err));
+    }
+
+    #[test]
+    fn duplicate_cwd_renders() {
+        let src = NamedSource::new("jig.kdl", "foo cwd=\"/a\" cwd=\"/b\" {}\n".to_string());
+        let err = Error::DuplicateCwd {
+            src,
+            first: SourceSpan::from((4, 8)),
+            second: SourceSpan::from((13, 8)),
+        };
+        insta::assert_snapshot!(render_for_snapshot(&err));
+    }
+
+    #[test]
+    fn cwd_not_utf8_renders() {
+        let err = Error::CwdNotUtf8 {
+            lossy: "/some/\u{fffd}/dir".to_string(),
+        };
+        insta::assert_snapshot!(render_for_snapshot(&err));
+    }
+
+    #[test]
+    fn cwd_contains_nul_renders() {
+        let err = Error::CwdContainsNul {
+            path: "/some\u{0}/dir".to_string(),
+        };
+        insta::assert_snapshot!(render_for_snapshot(&err));
+    }
+
+    #[test]
+    fn cwd_not_usable_renders() {
+        let err = Error::CwdNotUsable {
+            path: PathBuf::from("/this/does/not/exist"),
+            source: std::io::Error::from(std::io::ErrorKind::NotFound),
         };
         insta::assert_snapshot!(render_for_snapshot(&err));
     }

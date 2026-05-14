@@ -63,32 +63,37 @@ fn run(cli: &Cli) -> Result<i32> {
     // the config defensively: any error becomes empty stdout +
     // exit 0 so the shell never sees a half-broken tab-complete.
     if cli.list_commands {
-        if let Ok((config, src)) = config::load::load(cli.config.as_deref())
-            && config::validate::validate(&config, &src).is_ok()
+        if let Ok(loaded) = config::load::load(cli.config.as_deref())
+            && config::validate::validate(&loaded.config, &loaded.src).is_ok()
         {
-            complete::print_commands(&config);
+            complete::print_commands(&loaded.config);
         }
         return Ok(0);
     }
     if let Some(name) = &cli.list_profiles {
-        if let Ok((config, src)) = config::load::load(cli.config.as_deref())
-            && config::validate::validate(&config, &src).is_ok()
+        if let Ok(loaded) = config::load::load(cli.config.as_deref())
+            && config::validate::validate(&loaded.config, &loaded.src).is_ok()
         {
-            complete::print_profiles(&config, name);
+            complete::print_profiles(&loaded.config, name);
         }
         return Ok(0);
     }
 
-    let (config, src) = config::load::load(cli.config.as_deref())?;
-    config::validate::validate(&config, &src)?;
+    let loaded = config::load::load(cli.config.as_deref())?;
+    config::validate::validate(&loaded.config, &loaded.src)?;
 
     if cli.list {
-        list::print(&config)?;
+        list::print(&loaded.config)?;
         return Ok(0);
     }
 
     let command_name = cli.command.as_deref().ok_or(Error::MissingCommand)?;
-    let resolved = resolve::resolve(&config, command_name, cli.profile.as_deref())?;
+    let resolved = resolve::resolve(
+        &loaded.config,
+        command_name,
+        cli.profile.as_deref(),
+        &loaded.config_dir,
+    )?;
 
     if cli.dry_run {
         let line = format::to_dry_run(
@@ -96,6 +101,7 @@ fn run(cli: &Cli) -> Result<i32> {
             &resolved.args,
             &cli.passthrough,
             &resolved.env,
+            resolved.cwd.as_deref(),
         )?;
         println!("{line}");
         Ok(0)
@@ -106,11 +112,17 @@ fn run(cli: &Cli) -> Result<i32> {
                 &resolved.args,
                 &cli.passthrough,
                 &resolved.env,
+                resolved.cwd.as_deref(),
             )?;
             emit_preview(&line);
         }
         let argv = format::to_argv(&resolved.args, &cli.passthrough);
-        exec::run(&resolved.program, &argv, &resolved.env)
+        exec::run(
+            &resolved.program,
+            &argv,
+            &resolved.env,
+            resolved.cwd.as_deref(),
+        )
     }
 }
 

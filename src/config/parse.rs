@@ -53,10 +53,13 @@ pub fn parse_str(content: &str, path: &str) -> Result<Config> {
 }
 
 fn parse_command(node: &KdlNode, src: &NamedSource<String>) -> Result<Command> {
-    reject_properties(node, src)?;
     // Top-level nodes are commands; no type annotation is meaningful
     // here, so reject any (`(env)` or otherwise).
     reject_any_annotation(node, src)?;
+
+    // §2.12: the only recognised property on a command node is
+    // `cwd="<path>"`. Anything else is a parse error.
+    let cwd = parse_command_properties(node, src)?;
 
     let name = node.name().value().to_string();
     let name_span = node.name().span();
@@ -89,6 +92,7 @@ fn parse_command(node: &KdlNode, src: &NamedSource<String>) -> Result<Command> {
         name_span,
         alias,
         alias_span,
+        cwd,
         children,
         env,
     })
@@ -122,15 +126,15 @@ fn parse_command_body(
                 if let Some(child_doc) = node.children() {
                     // Has children → profile. Reject positional values
                     // on profile nodes (they have no v1 meaning); allow
-                    // only the named property `extends="<parent>"` per
-                    // `SPEC.md` §2.8.5.
+                    // the named properties `extends="<parent>"` per
+                    // `SPEC.md` §2.8.5 and `cwd="<path>"` per §2.12.
                     if let Some(extra) = node.entries().iter().find(|e| e.name().is_none()) {
                         return Err(Error::FlagMultipleValues {
                             src: src.clone(),
                             span: extra.span(),
                         });
                     }
-                    let extends = parse_profile_extends(node, src)?;
+                    let (extends, cwd) = parse_profile_properties(node, src)?;
                     let name = node.name().value().to_string();
                     let name_span = node.name().span();
                     let (args, profile_env) = parse_profile_body(child_doc, src)?;
@@ -138,6 +142,7 @@ fn parse_command_body(
                         name,
                         name_span,
                         extends,
+                        cwd,
                         args,
                         env: profile_env,
                     });
@@ -151,44 +156,108 @@ fn parse_command_body(
     Ok((children, env))
 }
 
-/// Parse the inheritance pointer from a profile node's properties.
-/// Per `SPEC.md` §2.8.5 a profile may carry exactly one named
-/// property `extends="<parent>"` where the value is a string; any
-/// other property is rejected. Returns `None` when no `extends`
-/// property is present.
-fn parse_profile_extends(
+/// A property pair `(value, span)` of the kind both `extends=` and
+/// `cwd=` produce. The value carries the raw string from the KDL
+/// source; the span points at the value entry so two-span
+/// diagnostics can label the right token.
+type StringProperty = Option<(String, miette::SourceSpan)>;
+
+/// Parse the inheritance pointer and cwd from a profile node's
+/// properties. Per `SPEC.md` §2.8.5 / §2.12 a profile may carry the
+/// named properties `extends="<parent>"` and `cwd="<path>"`; any
+/// other property is rejected. Returns `(extends, cwd)`, each
+/// `None` when its property is absent.
+fn parse_profile_properties(
     node: &KdlNode,
     src: &NamedSource<String>,
-) -> Result<Option<(String, miette::SourceSpan)>> {
-    let mut extends: Option<(String, miette::SourceSpan)> = None;
+) -> Result<(StringProperty, StringProperty)> {
+    let mut extends: StringProperty = None;
+    let mut cwd: StringProperty = None;
     for entry in node.entries() {
         let Some(prop_name) = entry.name() else {
             // Unnamed (positional) entries are rejected by the caller.
             continue;
         };
-        if prop_name.value() != "extends" {
-            return Err(Error::UnsupportedPropertyOnProfile {
-                name: prop_name.value().to_string(),
+        match prop_name.value() {
+            "extends" => {
+                if let Some((_, first)) = &extends {
+                    return Err(Error::DuplicateProfileExtends {
+                        src: src.clone(),
+                        first: *first,
+                        second: entry.span(),
+                    });
+                }
+                let KdlValue::String(parent) = entry.value() else {
+                    return Err(Error::ProfileExtendsBadValue {
+                        src: src.clone(),
+                        span: entry.span(),
+                    });
+                };
+                extends = Some((parent.clone(), entry.span()));
+            }
+            "cwd" => {
+                if let Some((_, first)) = &cwd {
+                    return Err(Error::DuplicateCwd {
+                        src: src.clone(),
+                        first: *first,
+                        second: entry.span(),
+                    });
+                }
+                cwd = Some((parse_cwd_value(entry, src)?, entry.span()));
+            }
+            _ => {
+                return Err(Error::UnsupportedPropertyOnProfile {
+                    name: prop_name.value().to_string(),
+                    src: src.clone(),
+                    span: entry.span(),
+                });
+            }
+        }
+    }
+    Ok((extends, cwd))
+}
+
+/// Parse a command node's properties. Per `SPEC.md` §2.12 / §2.9 the
+/// only recognised property on a command node is `cwd="<path>"`;
+/// every other property is rejected as `NodeHasProperties`. Returns
+/// the `cwd` if one was present.
+fn parse_command_properties(node: &KdlNode, src: &NamedSource<String>) -> Result<StringProperty> {
+    let mut cwd: StringProperty = None;
+    for entry in node.entries() {
+        let Some(prop_name) = entry.name() else {
+            // Unnamed positional values (the alias on a command) are
+            // handled by the caller.
+            continue;
+        };
+        if prop_name.value() != "cwd" {
+            return Err(Error::NodeHasProperties {
                 src: src.clone(),
                 span: entry.span(),
             });
         }
-        if let Some((_, first)) = &extends {
-            return Err(Error::DuplicateProfileExtends {
+        if let Some((_, first)) = &cwd {
+            return Err(Error::DuplicateCwd {
                 src: src.clone(),
                 first: *first,
                 second: entry.span(),
             });
         }
-        let KdlValue::String(parent) = entry.value() else {
-            return Err(Error::ProfileExtendsBadValue {
-                src: src.clone(),
-                span: entry.span(),
-            });
-        };
-        extends = Some((parent.clone(), entry.span()));
+        cwd = Some((parse_cwd_value(entry, src)?, entry.span()));
     }
-    Ok(extends)
+    Ok(cwd)
+}
+
+/// Extract the string value of a `cwd=` property. Per `SPEC.md`
+/// §2.12 the value must be a non-empty string; numbers, booleans,
+/// `#null`, and the empty string are rejected.
+fn parse_cwd_value(entry: &KdlEntry, src: &NamedSource<String>) -> Result<String> {
+    match entry.value() {
+        KdlValue::String(s) if !s.is_empty() => Ok(s.clone()),
+        _ => Err(Error::CwdBadValue {
+            src: src.clone(),
+            span: entry.span(),
+        }),
+    }
 }
 
 /// Parse the body of a profile node — arguments and `(env)`
@@ -1053,8 +1122,158 @@ mod tests {
     #[test]
     fn profile_with_positional_value_still_rejected() {
         // A positional ("value") on a profile node remains a parse
-        // error — only `extends="<parent>"` is allowed.
+        // error — only `extends="<parent>"` and `cwd="<path>"` are
+        // allowed.
         let err = parse(r#"foo { child "parent" {} }"#).unwrap_err();
         assert!(matches!(err, Error::FlagMultipleValues { .. }));
+    }
+
+    // --- §2.12 `cwd="<path>"` property ---
+
+    #[test]
+    fn cwd_on_command_captured() {
+        let cfg = parse(r#"foo cwd="/abs/path" {}"#).unwrap();
+        let (path, _) = cfg.commands[0]
+            .cwd
+            .as_ref()
+            .expect("cwd should be parsed on the command");
+        assert_eq!(path, "/abs/path");
+    }
+
+    #[test]
+    fn cwd_on_command_relative_value_kept_verbatim() {
+        // Path resolution against the config-file directory happens
+        // in `resolve`, not in `parse`; the parser keeps the value
+        // exactly as written.
+        let cfg = parse(r#"foo cwd="src" {}"#).unwrap();
+        let (path, _) = cfg.commands[0].cwd.as_ref().unwrap();
+        assert_eq!(path, "src");
+    }
+
+    #[test]
+    fn cwd_on_command_with_alias_and_body() {
+        let cfg = parse(
+            r#"foo "bar" cwd="/work" {
+                host "0.0.0.0"
+                fast {
+                    -ngl 999
+                }
+            }"#,
+        )
+        .unwrap();
+        let cmd = &cfg.commands[0];
+        assert_eq!(cmd.alias.as_deref(), Some("bar"));
+        let (path, _) = cmd.cwd.as_ref().unwrap();
+        assert_eq!(path, "/work");
+        assert_eq!(cmd.children.len(), 2);
+    }
+
+    #[test]
+    fn cwd_on_profile_captured() {
+        let cfg = parse(
+            r#"foo {
+                fast cwd="src/fast" { -ngl 999 }
+            }"#,
+        )
+        .unwrap();
+        let CommandChild::Profile { cwd, .. } = &cfg.commands[0].children[0] else {
+            panic!("expected profile");
+        };
+        let (path, _) = cwd.as_ref().expect("cwd should be parsed on the profile");
+        assert_eq!(path, "src/fast");
+    }
+
+    #[test]
+    fn cwd_alongside_extends_on_profile() {
+        let cfg = parse(
+            r#"foo {
+                parent {}
+                child extends="parent" cwd="here" {}
+            }"#,
+        )
+        .unwrap();
+        let CommandChild::Profile { extends, cwd, .. } = &cfg.commands[0].children[1] else {
+            panic!();
+        };
+        assert!(extends.is_some());
+        let (path, _) = cwd.as_ref().unwrap();
+        assert_eq!(path, "here");
+    }
+
+    #[test]
+    fn cwd_without_property_leaves_none() {
+        let cfg = parse(r"foo { fast { -ngl 999 } }").unwrap();
+        assert!(cfg.commands[0].cwd.is_none());
+        let CommandChild::Profile { cwd, .. } = &cfg.commands[0].children[0] else {
+            panic!();
+        };
+        assert!(cwd.is_none());
+    }
+
+    #[test]
+    fn cwd_non_string_value_rejected() {
+        for snippet in [
+            r"foo cwd=#true {}",
+            r"foo cwd=#false {}",
+            r"foo cwd=#null {}",
+            r"foo cwd=42 {}",
+            r"foo cwd=0.5 {}",
+        ] {
+            let err = parse(snippet).unwrap_err();
+            assert!(
+                matches!(err, Error::CwdBadValue { .. }),
+                "expected CwdBadValue for {snippet:?}, got {err:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn cwd_non_string_on_profile_rejected() {
+        let err = parse(r"foo { child cwd=42 {} }").unwrap_err();
+        assert!(matches!(err, Error::CwdBadValue { .. }));
+    }
+
+    #[test]
+    fn cwd_empty_string_rejected() {
+        let err = parse(r#"foo cwd="" {}"#).unwrap_err();
+        assert!(matches!(err, Error::CwdBadValue { .. }));
+    }
+
+    #[test]
+    fn cwd_duplicate_on_command_rejected() {
+        let err = parse(r#"foo cwd="a" cwd="b" {}"#).unwrap_err();
+        assert!(matches!(err, Error::DuplicateCwd { .. }));
+    }
+
+    #[test]
+    fn cwd_duplicate_on_profile_rejected() {
+        let err = parse(r#"foo { child cwd="a" cwd="b" {} }"#).unwrap_err();
+        assert!(matches!(err, Error::DuplicateCwd { .. }));
+    }
+
+    #[test]
+    fn other_property_on_command_still_rejected() {
+        // Only `cwd` is recognised on a command; any other property
+        // continues to be a NodeHasProperties parse error.
+        let err = parse(r#"foo extras="x" {}"#).unwrap_err();
+        assert!(matches!(err, Error::NodeHasProperties { .. }));
+    }
+
+    #[test]
+    fn cwd_not_allowed_on_default_arg() {
+        // A default-arg node is treated as a flag (it has a value)
+        // or a positional (it does not). Any property on it — `cwd`
+        // included — is rejected as `NodeHasProperties`.
+        let err = parse(r#"foo { host "0.0.0.0" cwd="here" }"#).unwrap_err();
+        assert!(matches!(err, Error::NodeHasProperties { .. }));
+    }
+
+    #[test]
+    fn cwd_not_allowed_on_env_node() {
+        // `(env)` declarations are argument-shaped (no children, one
+        // value). A `cwd=` on one is a property-on-arg failure, not
+        // an env-specific failure.
+        let err = parse(r#"foo { (env)X "y" cwd="z" }"#).unwrap_err();
+        assert!(matches!(err, Error::NodeHasProperties { .. }));
     }
 }

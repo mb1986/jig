@@ -20,9 +20,23 @@ use crate::errors::{Error, Result};
 const PRIMARY: &str = "jig.kdl";
 const FALLBACK: &str = ".jig.kdl";
 
-/// Load and parse the config, returning the parsed [`Config`]
-/// alongside a [`NamedSource`] that the validator can attach to
-/// any constraint diagnostics.
+/// A loaded config file: the parsed [`Config`], a [`NamedSource`]
+/// the validator attaches to any constraint diagnostics, and the
+/// directory that contains the file (used as the anchor for
+/// relative `cwd=` values per `SPEC.md` §2.12).
+#[derive(Debug)]
+pub struct Loaded {
+    /// The parsed and structurally-valid configuration.
+    pub config: Config,
+    /// The KDL source text + file name, threaded into miette for
+    /// span-aware diagnostics.
+    pub src: NamedSource<String>,
+    /// The directory containing the loaded config file. Relative
+    /// paths in `cwd=` (`SPEC.md` §2.12) resolve against this.
+    pub config_dir: PathBuf,
+}
+
+/// Load and parse the config.
 ///
 /// If `explicit` is `Some`, that path is used directly (relative
 /// paths are resolved against the CWD as usual). Otherwise, the
@@ -36,7 +50,7 @@ const FALLBACK: &str = ".jig.kdl";
 /// Returns [`Error::ConfigNotFound`] if no config file exists in
 /// the search range, [`Error::ConfigIo`] if reading the chosen
 /// file fails, or any error produced by [`parse::parse_str`].
-pub fn load(explicit: Option<&Path>) -> Result<(Config, NamedSource<String>)> {
+pub fn load(explicit: Option<&Path>) -> Result<Loaded> {
     let path = match explicit {
         Some(p) => p.to_path_buf(),
         None => discover_upward()?,
@@ -51,7 +65,51 @@ pub fn load(explicit: Option<&Path>) -> Result<(Config, NamedSource<String>)> {
     );
     let config = parse::parse_str(&content, &display_name)?;
     let src = NamedSource::new(display_name, content);
-    Ok((config, src))
+    // Anchor for relative `cwd=` per `SPEC.md` §2.12.2. The upward
+    // walk always produces an absolute path; an explicit `--config`
+    // may be relative (including a bare filename like `jig.kdl`,
+    // whose parent is `""`). We canonicalise to "absolute path of
+    // the parent directory at jig-invocation time" so the SPEC §7.2
+    // guarantee of an absolute path inside `(cd … && …)` holds.
+    // Symlinks in the parent are preserved (no `realpath` resolution
+    // — `env::current_dir()` returns the logical path).
+    let config_dir = absolutise_parent(&path)?;
+    Ok(Loaded {
+        config,
+        src,
+        config_dir,
+    })
+}
+
+/// Return the absolute directory containing `path`. If `path`'s
+/// parent is already absolute, returns it as-is. Otherwise prepends
+/// the current working directory: an empty parent (bare filename
+/// like `jig.kdl`) and a relative parent (`./foo/jig.kdl`) both
+/// resolve relative to the process CWD.
+///
+/// Note: a path whose `.parent()` is `None` (only the filesystem
+/// root, which cannot be a config file) also falls through the
+/// relative branch and joins onto CWD. That case is unreachable in
+/// practice — `open(2)` on the root directory would have failed
+/// earlier.
+///
+/// Errors only if `path` is relative and `env::current_dir()` itself
+/// fails (a rare OS-level failure that already short-circuits the
+/// discovery path in [`discover_upward`]).
+fn absolutise_parent(path: &Path) -> Result<PathBuf> {
+    let parent = path.parent().unwrap_or_else(|| Path::new(""));
+    if parent.is_absolute() {
+        return Ok(parent.to_path_buf());
+    }
+    let cwd = env::current_dir().map_err(|source| Error::ConfigIo {
+        path: PathBuf::from("."),
+        source,
+    })?;
+    if parent.as_os_str().is_empty() {
+        Ok(cwd)
+    } else {
+        Ok(cwd.join(parent))
+    }
 }
 
 fn discover_upward() -> Result<PathBuf> {

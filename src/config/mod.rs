@@ -34,6 +34,11 @@ pub struct Command {
     pub alias: Option<String>,
     /// Source span of the alias entry, present iff `alias` is.
     pub alias_span: Option<SourceSpan>,
+    /// Optional working-directory pin from the `cwd="<path>"`
+    /// property (`SPEC.md` §2.12). The string is the path as written
+    /// in the config (no anchor resolution at parse time); the span
+    /// points at the value entry for diagnostics.
+    pub cwd: Option<(String, SourceSpan)>,
     /// Source-ordered children: defaults and profiles interleaved.
     /// See `IMPLEMENTATION.md` §7.3.1 for why this is one list
     /// rather than two collections.
@@ -65,6 +70,10 @@ pub enum CommandChild {
         /// validation can render two-span diagnostics. Cycle and
         /// unknown-parent checks live in the validator.
         extends: Option<(String, SourceSpan)>,
+        /// Optional working-directory pin from the `cwd="<path>"`
+        /// property on this profile node (`SPEC.md` §2.12). Same
+        /// representation as [`Command::cwd`]: source text and span.
+        cwd: Option<(String, SourceSpan)>,
         /// Profile body's argument-shaped contributions
         /// (flags / positionals), in source order.
         args: Vec<Argument>,
