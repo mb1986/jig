@@ -76,7 +76,10 @@ _jig() {
         '(-l --list)--list[List configured commands and profiles]' \
         '(-n --dry-run)-n[Print the resolved command without running it]' \
         '(-n --dry-run)--dry-run[Print the resolved command without running it]' \
+        '(-q --quiet)-q[Suppress the pre-exec preview line]' \
+        '(-q --quiet)--quiet[Suppress the pre-exec preview line]' \
         '--config=[Use this config file]:path:_files' \
+        '--completions=[Print a shell completion script]:shell:(zsh bash fish)' \
         '1:command:->command' \
         '2:profile:->profile' \
         '*::passthrough:_files' \

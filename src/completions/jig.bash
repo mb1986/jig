@@ -23,6 +23,12 @@ _jig() {
         return
     fi
 
+    # Shell-name completion when the cursor sits on `--completions`'s value.
+    if [[ "$prev" == "--completions" ]]; then
+        COMPREPLY=( $(compgen -W "zsh bash fish" -- "$cur") )
+        return
+    fi
+
     # Mirror jig's argv split: parse jig flags only before the first
     # positional command. After that, every token is command/profile/
     # pass-through context, even if it starts with `-`.
@@ -75,7 +81,7 @@ _jig() {
     # `-` is pass-through, so fall through to file completion.
     if [[ "$cur" == -* ]]; then
         if (( ${#positionals[@]} == 0 )); then
-            COMPREPLY=( $(compgen -W "-h --help -V --version -l --list -n --dry-run --config" -- "$cur") )
+            COMPREPLY=( $(compgen -W "-h --help -V --version -l --list -n --dry-run -q --quiet --config --completions" -- "$cur") )
         else
             COMPREPLY=( $(compgen -f -- "$cur") )
         fi

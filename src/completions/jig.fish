@@ -112,7 +112,9 @@ complete -c jig -s h -l help -d 'Print help'
 complete -c jig -s V -l version -d 'Print version'
 complete -c jig -s l -l list -d 'List configured commands and profiles'
 complete -c jig -s n -l dry-run -d 'Print the resolved command without running it'
+complete -c jig -s q -l quiet -d 'Suppress the pre-exec preview line'
 complete -c jig -l config -d 'Use this config file' -r -F
+complete -c jig -l completions -d 'Print a shell completion script' -x -a 'zsh bash fish'
 
 complete -c jig -n 'test (__jig_positional) -eq 0' -a '(__jig_complete_commands)' -d 'command or alias'
 complete -c jig -n 'test (__jig_positional) -eq 1' -a '(__jig_complete_profiles)' -d 'profile'

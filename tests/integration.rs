@@ -1666,7 +1666,10 @@ const JIG_FLAGS: &[&str] = &[
     "--list",
     "-n",
     "--dry-run",
+    "-q",
+    "--quiet",
     "--config",
+    "--completions",
 ];
 
 #[test]
@@ -1706,7 +1709,15 @@ fn bash_completion_initial_hyphen_offers_jig_flags() {
         return;
     }
     let reply = bash_reply(&["jig", "-"]);
-    for flag in ["--help", "--config", "--list", "--dry-run", "--version"] {
+    for flag in [
+        "--help",
+        "--config",
+        "--list",
+        "--dry-run",
+        "--version",
+        "--quiet",
+        "--completions",
+    ] {
         assert!(
             reply.iter().any(|x| x == flag),
             "expected jig flag `{flag}`; got {reply:?}"

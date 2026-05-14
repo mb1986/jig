@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Shell completion scripts (zsh, bash, fish) now offer `-q` /
+  `--quiet` and `--completions` as candidates. Both were already
+  recognised when parsing argv context, so tab completion behaved
+  correctly *around* them, but neither flag showed up when
+  tab-completing `jig -<TAB>`. `--completions` also offers
+  `zsh` / `bash` / `fish` as value candidates.
+
 ## [0.8.2] — 2026-05-15
 
 ### Changed
