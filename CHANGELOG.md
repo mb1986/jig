@@ -37,6 +37,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `--list` output (SPEC §7.1). Each profile now renders as its own
+  indented sub-block with optional `cwd:`, `env:`, and `args:` lines
+  built from the profile's own contributions, alongside the existing
+  command-level `cwd:`, `env:`, and `defaults:` lines (the
+  command-level label `default-args:` is now `defaults:`). Section
+  labels within a block are padded to a common width so values line
+  up. When stdout is a terminal and `NO_COLOR` is unset, command
+  names render in bold cyan, profile names and section labels in
+  bold, and parenthesized annotations (`(alias: ...)`,
+  `(extends ...)`) in dim; piped or `NO_COLOR`-set output stays
+  plain text. The per-profile view is static — it shows each
+  profile's raw contributions, not the resolved merge with defaults;
+  use `--dry-run` to see what a given invocation would actually
+  execute.
 - Configuration discovery now walks upward from the current working
   directory through its ancestors instead of looking only at the CWD
   (SPEC §2.1). Within each directory `jig.kdl` is preferred over
