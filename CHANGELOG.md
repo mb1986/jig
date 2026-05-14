@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-05-15
+
+### Fixed
+
+- `rust-version` in `Cargo.toml` is now `1.88`, matching the real
+  minimum compiler the source needs (stable let-chain expressions in
+  `src/resolve.rs`). Previous releases declared `1.85` (the edition
+  2024 floor), which would have surfaced a hard compile error on a
+  1.85 toolchain instead of cargo's "package requires a newer rustc"
+  message. Installs on 1.88+ are unaffected.
+
 ## [0.8.0] — 2026-05-15
 
 ### Added
@@ -284,7 +295,8 @@ Initial release. v1, Unix only (Linux and macOS).
 - Static shell completion for bash, zsh, fish, elvish, and powershell via
   `clap_complete`.
 
-[Unreleased]: https://github.com/mb1986/jig/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/mb1986/jig/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/mb1986/jig/releases/tag/v0.8.1
 [0.8.0]: https://github.com/mb1986/jig/releases/tag/v0.8.0
 [0.7.1]: https://github.com/mb1986/jig/releases/tag/v0.7.1
 [0.7.0]: https://github.com/mb1986/jig/releases/tag/v0.7.0
