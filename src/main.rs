@@ -106,7 +106,14 @@ fn run(cli: &Cli) -> Result<i32> {
         // is the bare filename — joining them recovers the
         // canonical path used at load time.
         let source_path = loaded.config_dir.join(source_name);
-        explain::print(&resolved, &trace, source_name, &source_path, source_bytes)?;
+        explain::print(
+            &resolved,
+            &trace,
+            &cli.passthrough,
+            source_name,
+            &source_path,
+            source_bytes,
+        )?;
         return Ok(0);
     }
 

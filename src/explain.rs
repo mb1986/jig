@@ -21,6 +21,7 @@
 //! `(inherited)`, bright white for values, and dim+strikethrough
 //! for dropped values.
 
+use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 
 use miette::SourceSpan;
@@ -49,17 +50,29 @@ use crate::theme::Theme;
 pub fn print(
     resolved: &Resolved,
     trace: &ResolutionTrace,
+    passthrough: &[OsString],
     source_name: &str,
     source_path: &Path,
     source_bytes: &str,
 ) -> Result<()> {
     let theme = Theme::from_stdout();
+    // The passthrough block, when present, occupies one extra
+    // marker slot at the end of the resolved line — render it
+    // once here so both the resolved-line tail and the trailing
+    // footnote share the same shell-quoted text.
+    let passthrough_text = if passthrough.is_empty() {
+        None
+    } else {
+        Some(format::format_passthrough(passthrough)?)
+    };
     // Pad every footnote marker to the width of the largest one
     // (e.g. `[1]` becomes ` [1]` when some segment is `[10]`, so the
     // closing `]` aligns vertically). The contributor indent below
     // each footnote tracks the marker width so the +1 visual nest
-    // under segment text holds for any segment count.
-    let marker_width = format!("[{}]", resolved.args.len()).chars().count();
+    // under segment text holds for any segment count. The
+    // passthrough block, when present, counts as one extra segment.
+    let total_segments = resolved.args.len() + usize::from(passthrough_text.is_some());
+    let marker_width = format!("[{total_segments}]").chars().count();
     let contributor_indent = " ".repeat(marker_width + 5);
     let ctx = RenderCtx {
         theme,
@@ -72,11 +85,16 @@ pub fn print(
 
     print_header(resolved, trace, &ctx);
     println!();
-    print_resolved_line(resolved, &ctx)?;
+    print_resolved_line(resolved, passthrough_text.as_deref(), &ctx)?;
 
     for (k, (arg, seg)) in resolved.args.iter().zip(trace.segments.iter()).enumerate() {
         println!();
         print_footnote(k + 1, arg, seg, &ctx)?;
+    }
+
+    if let Some(text) = &passthrough_text {
+        println!();
+        print_passthrough_footnote(resolved.args.len() + 1, text, &ctx);
     }
 
     if !trace.env.is_empty() {
@@ -230,8 +248,15 @@ fn print_header(resolved: &Resolved, trace: &ResolutionTrace, ctx: &RenderCtx<'_
 /// markers in front of each segment. Inline placement means markers
 /// wrap with their segments — no alignment break when the resolved
 /// line exceeds the terminal width. Each `[N]` matches the numbered
-/// footnote that explains the segment.
-fn print_resolved_line(resolved: &Resolved, ctx: &RenderCtx<'_>) -> Result<()> {
+/// footnote that explains the segment. When `passthrough_text` is
+/// `Some`, the CLI-supplied passthrough block occupies one extra
+/// trailing marker, joined as a single segment so the footnote can
+/// attribute every token to one source.
+fn print_resolved_line(
+    resolved: &Resolved,
+    passthrough_text: Option<&str>,
+    ctx: &RenderCtx<'_>,
+) -> Result<()> {
     let indent = "  ";
     println!("{}", ctx.theme.label("resolved:"));
     print!("{indent}{}", ctx.theme.cmd_name(&resolved.program));
@@ -250,8 +275,33 @@ fn print_resolved_line(resolved: &Resolved, ctx: &RenderCtx<'_>) -> Result<()> {
             ctx.theme.value(&text),
         );
     }
+    if let Some(text) = passthrough_text {
+        n += 1;
+        print!(
+            " {} {}",
+            ctx.theme.label(&format!("[{n}]")),
+            ctx.theme.value(text),
+        );
+    }
     println!();
     Ok(())
+}
+
+// --- passthrough footnote ---
+
+/// Print the trailing footnote that lists the CLI-supplied
+/// passthrough tokens. Unlike per-config-segment footnotes there is
+/// no contributing tier or `file:line` to point at — the tokens come
+/// from the command line — so the attribution is a single
+/// `from command line` row.
+fn print_passthrough_footnote(n: usize, text: &str, ctx: &RenderCtx<'_>) {
+    let t = ctx.theme;
+    let marker = format!("[{n}]");
+    let width = ctx.marker_width;
+    let padded_marker = format!("{marker:>width$}");
+    println!("  {}  {}", t.label(&padded_marker), t.value(text));
+    let indent = &ctx.contributor_indent;
+    println!("{indent}{}", t.label("from command line"));
 }
 
 // --- per-segment footnote ---

@@ -1,0 +1,16 @@
+---
+source: tests/integration.rs
+assertion_line: 3277
+expression: stdout
+---
+program:   some-tool
+config:    jig.kdl
+
+resolved:
+  some-tool [1] --host 0.0.0.0 [2] -a --test
+
+  [1]  --host 0.0.0.0
+        defaults  jig.kdl:2
+
+  [2]  -a --test
+        from command line

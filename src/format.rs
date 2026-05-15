@@ -264,6 +264,30 @@ where
     shell_join(&args_to_tokens(args))
 }
 
+/// Render pass-through tokens as a single shell-quoted, space-joined
+/// string. Used by `--explain` to surface the trailing CLI-supplied
+/// passthrough block alongside the config-derived argv segments.
+/// Returns an empty string for an empty input.
+///
+/// # Errors
+///
+/// Returns [`Error::PassthroughNotUtf8`] if any token is not valid
+/// UTF-8, or [`Error::ArgumentContainsNul`] if any token contains a
+/// NUL byte (which `shlex` cannot quote).
+pub fn format_passthrough(passthrough: &[OsString]) -> Result<String> {
+    let mut tokens: Vec<String> = Vec::with_capacity(passthrough.len());
+    for pt in passthrough {
+        let s = pt
+            .to_str()
+            .ok_or_else(|| Error::PassthroughNotUtf8 {
+                lossy: pt.to_string_lossy().into_owned(),
+            })?
+            .to_string();
+        tokens.push(s);
+    }
+    shell_join(&tokens)
+}
+
 /// Render config-side env entries as a `--list` line:
 /// `-u UNSET NAME=value`, space-joined. Used by `--list` per
 /// `SPEC.md` §7.1 to render both the command-level and per-profile
@@ -438,6 +462,42 @@ mod tests {
         let invalid = OsString::from_vec(vec![0xff, 0xfe]);
         let err = to_dry_run("foo", &[], &[invalid], &[], None).unwrap_err();
         assert!(matches!(err, Error::PassthroughNotUtf8 { .. }));
+    }
+
+    // --- format_passthrough (used by --explain to surface the
+    //     trailing CLI-supplied tokens) ---
+
+    #[test]
+    fn format_passthrough_empty_returns_empty_string() {
+        assert_eq!(format_passthrough(&[]).unwrap(), "");
+    }
+
+    #[test]
+    fn format_passthrough_joins_plain_tokens_with_spaces() {
+        let tokens = [OsString::from("-a"), OsString::from("--test")];
+        assert_eq!(format_passthrough(&tokens).unwrap(), "-a --test");
+    }
+
+    #[test]
+    fn format_passthrough_quotes_tokens_with_spaces() {
+        let tokens = [OsString::from("a b"), OsString::from("c")];
+        assert_eq!(format_passthrough(&tokens).unwrap(), "'a b' c");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn format_passthrough_errors_on_non_utf8_token() {
+        use std::os::unix::ffi::OsStringExt;
+        let invalid = OsString::from_vec(vec![0xff, 0xfe]);
+        let err = format_passthrough(&[invalid]).unwrap_err();
+        assert!(matches!(err, Error::PassthroughNotUtf8 { .. }));
+    }
+
+    #[test]
+    fn format_passthrough_errors_on_nul_byte() {
+        let tokens = [OsString::from("a\0b")];
+        let err = format_passthrough(&tokens).unwrap_err();
+        assert!(matches!(err, Error::ArgumentContainsNul { .. }));
     }
 
     // --- format_args (used by --list per §7.1) ---

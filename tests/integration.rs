@@ -3194,6 +3194,90 @@ fn explain_pads_markers_so_double_digit_text_aligns() {
 }
 
 #[test]
+fn explain_renders_passthrough() {
+    // CLI-supplied passthrough tokens after the profile should
+    // appear as one trailing `[N]` segment with a single
+    // `from command line` attribution — they are not in the
+    // config so per-token `file:line` rows would be redundant.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        r#"llama-server "bench" {
+    host "0.0.0.0"
+
+    qwen {
+        m "qwen.gguf"
+    }
+}
+"#,
+    )
+    .unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .env("NO_COLOR", "1")
+        .arg("--explain")
+        .arg("bench")
+        .arg("qwen")
+        .arg("-a")
+        .arg("--test")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    // The passthrough block must appear in the resolved line as a
+    // single segment (joined tokens) and again under a footnote
+    // attributed to the CLI.
+    assert!(
+        stdout.contains("-a --test"),
+        "expected joined passthrough tokens; stdout: {stdout:?}",
+    );
+    assert!(
+        stdout.contains("from command line"),
+        "expected passthrough attribution; stdout: {stdout:?}",
+    );
+    insta::assert_snapshot!(stdout);
+}
+
+#[test]
+fn explain_renders_passthrough_no_profile() {
+    // `--` immediately after the command is consumed as the
+    // "no profile" marker; the remaining tokens are passthrough.
+    // Explain should still surface them as the trailing segment.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        r#"some-tool {
+    host "0.0.0.0"
+}
+"#,
+    )
+    .unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .env("NO_COLOR", "1")
+        .arg("--explain")
+        .arg("some-tool")
+        .arg("--")
+        .arg("-a")
+        .arg("--test")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    // No `selected:` line (no profile), but the passthrough
+    // segment must still appear with its attribution row.
+    assert!(
+        !stdout.contains("selected:"),
+        "no profile was selected; stdout: {stdout:?}",
+    );
+    assert!(
+        stdout.contains("from command line"),
+        "expected passthrough attribution; stdout: {stdout:?}",
+    );
+    insta::assert_snapshot!(stdout);
+}
+
+#[test]
 fn explain_renders_env_and_cwd() {
     // Env vars and cwd should appear in dedicated sections after
     // the per-segment footnotes.
