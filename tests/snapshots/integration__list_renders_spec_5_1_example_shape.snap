@@ -2,6 +2,8 @@
 source: tests/integration.rs
 expression: stdout
 ---
+config:   jig.kdl
+
 llama-server  (alias: serve)
   defaults: --host 0.0.0.0 --port 8090 -c 32768 --flash-attn
   profiles:

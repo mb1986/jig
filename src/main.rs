@@ -86,7 +86,8 @@ fn run(cli: &Cli) -> Result<i32> {
     config::validate::validate(&loaded.config, &loaded.src)?;
 
     if cli.list {
-        list::print(&loaded.config)?;
+        let source_path = loaded.config_dir.join(loaded.src.name());
+        list::print(&loaded.config, &source_path)?;
         return Ok(0);
     }
 

@@ -1249,6 +1249,25 @@ fn list_omits_default_args_when_none() {
 }
 
 #[test]
+fn list_shows_config_header_with_ancestor_path() {
+    // §7.1: when the config sits in an ancestor of cwd, the
+    // `config:` header renders the path with `..` segments so the
+    // user can see the upward search hit. Invoke from `subdir/`
+    // with config in the parent.
+    let dir = tempdir().unwrap();
+    let sub = dir.path().join("subdir");
+    fs::create_dir(&sub).unwrap();
+    fs::write(dir.path().join("jig.kdl"), "foo {}\n").unwrap();
+    let out = jig().current_dir(&sub).arg("--list").output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.starts_with("config:   ../jig.kdl\n"),
+        "expected ancestor-relative config header; stdout: {stdout:?}",
+    );
+}
+
+#[test]
 fn completions_zsh_emits_non_empty_script() {
     // No config required (per Q1). Run from an empty directory.
     let dir = tempdir().unwrap();

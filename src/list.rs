@@ -1,5 +1,10 @@
 //! `--list` rendering per `SPEC.md` §3.4 / §7.1.
 //!
+//! Output starts with a `config:` header line naming the loaded
+//! config file (cwd-relative when possible, absolute otherwise),
+//! mirroring the `config:` line at the top of `--explain` output.
+//! The per-command blocks follow after one blank line.
+//!
 //! Each command prints as a header line, optional `cwd:` / `env:` /
 //! `defaults:` lines, and an optional `profiles:` sub-block. Each
 //! profile in that sub-block has its own optional `cwd:` / `env:` /
@@ -19,24 +24,34 @@
 //! byte-identical to the pre-color rendering shape (modulo the §7.1
 //! example shape itself).
 
+use std::path::Path;
+
 use crate::config::{Argument, Command, CommandChild, Config, EnvEntry};
 use crate::errors::Result;
 use crate::format;
+use crate::path::render_config_path;
 use crate::theme::Theme;
 
-/// Render `config` to stdout per `SPEC.md` §7.1.
+/// Render `config` to stdout per `SPEC.md` §7.1. `source_path` is the
+/// canonical path of the loaded config file; it is displayed in the
+/// `config:` header relative to the current working directory when
+/// possible.
 ///
 /// # Errors
 ///
 /// Returns [`crate::errors::Error::ArgumentContainsNul`] if any
 /// rendered value contains a NUL byte (rare, but [`format::format_args`]
 /// can't quote it).
-pub fn print(config: &Config) -> Result<()> {
+pub fn print(config: &Config, source_path: &Path) -> Result<()> {
     let theme = Theme::from_stdout();
-    for (i, cmd) in config.commands.iter().enumerate() {
-        if i > 0 {
-            println!();
-        }
+    let config_display = render_config_path(source_path);
+    println!(
+        "{}{}",
+        kv_label(theme, "config:", CMD_LABEL_WIDTH),
+        theme.value(&config_display),
+    );
+    for cmd in &config.commands {
+        println!();
         print_command(cmd, theme)?;
     }
     Ok(())

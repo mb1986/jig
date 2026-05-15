@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--list` output now starts with a `config:` header line naming the
+  loaded config file, mirroring the `config:` line at the top of
+  `--explain` output. The path is rendered relative to the current
+  working directory when possible (with `..` segments if the config
+  sits in an ancestor), and falls back to the absolute path otherwise.
+
 ## [0.9.1] — 2026-05-15
 
 ### Fixed

@@ -999,6 +999,8 @@ Human-readable text only for v1. No JSON or other machine-readable form. May be 
 The output should be readable enough to grep and eyeball, but is not promised to be stable for scripting. Suggested format (non-normative, for implementation guidance):
 
 ```
+config:   jig.kdl
+
 llama-server  (alias: serve)
   cwd:      /home/me/llama-stack
   env:      -u OLD_VAR OLLAMA_HOST=0.0.0.0
@@ -1019,6 +1021,8 @@ rsync  (alias: sync)
     backup
       args: /source/ user@host:/dest/
 ```
+
+Output begins with a `config:` header line naming the loaded config file, followed by one blank line and then the per-command blocks. The path is rendered relative to the current working directory when possible (with `..` segments if the config sits in an ancestor), and falls back to the absolute path otherwise — matching the `config:` line emitted by `--explain` (§7.3).
 
 For each command, the header line names the command and (if any) its alias. Then, in order, each command may emit:
 
