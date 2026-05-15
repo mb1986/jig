@@ -1089,7 +1089,9 @@ Argv-style (one argument per line) is **not** offered in v1. If users need to in
 
 ### 7.3 Argv-resolution explanation (`--explain`)
 
-Not in the initial v1 cut. `--list` (what's defined) and `--dry-run` (what would be executed) cover the realistic debugging needs of a tool this small today. A dedicated explanation mode that traces "default A applied, then profile overrode B with C" — likely spelled `--explain` or `--why` — is a candidate for a later v1.x release once the output shape is settled; see `FUTURE.md` for the current sketch.
+`--explain` / `-x` traces how the resolved command line was assembled and exits without executing. For each emitted argv segment it names the contributing tier (defaults, an inheritance-chain ancestor, or the selected profile), the source `file:line`, and any merge decision (single-mode override, repeat mode, marker, `#null` ghost, `#false` suppression, middle-tier loss) that isn't already implied by the resolved line. Env-var winners and shadowed contributions appear in a dedicated `env:` section; the effective `cwd=` appears in `cwd:`; keys whose every candidate was suppressed appear in `suppressed:` alongside the `#false` that cleared them.
+
+Mutually exclusive with `--dry-run`, `--list`, and `--completions`. Where `--dry-run` shows *what* would be executed, `--explain` shows *why*.
 
 ### 7.4 Error reporting
 

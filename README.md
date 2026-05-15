@@ -145,12 +145,20 @@ jig [FLAGS]... <command-or-alias> [profile] [PASSTHROUGH]...
 | Flag                    | What it does                                                       |
 |-------------------------|--------------------------------------------------------------------|
 | `-n`, `--dry-run`       | Print the resolved (shell-quoted) command line and exit.           |
+| `-x`, `--explain`       | Trace how the resolved command was assembled — which tier supplied each argument, where it was written, what got dropped — and exit. |
 | `-q`, `--quiet`         | Suppress the pre-exec preview line (see below).                    |
 | `--config <PATH>`       | Use `<PATH>` instead of searching CWD and its ancestors for `jig.kdl` / `.jig.kdl`. |
 | `-l`, `--list`          | List configured commands, aliases, env vars, and profiles.        |
 | `--completions <SHELL>` | Emit a shell completion script (`zsh`, `bash`, `fish`) to stdout.  |
 | `-h`, `--help`          | Print help.                                                        |
 | `-V`, `--version`       | Print version.                                                     |
+
+`--explain` complements `--dry-run`: where `--dry-run` shows *what*
+would be executed, `--explain` shows *why* — for each emitted argv
+segment it names the contributing tier (defaults, an inheritance-chain
+ancestor, or the selected profile), the source `file:line`, and any
+`#false` suppression or middle-tier loss that wouldn't otherwise be
+visible in the resolved line.
 
 Before spawning, `jig` writes the resolved command to stderr — bold
 when stderr is a terminal, plain text when it's redirected — so you

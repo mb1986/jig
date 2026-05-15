@@ -337,9 +337,8 @@ The following are deliberately deferred and tracked here so they are not silentl
 - Templating, includes, or computed values.
 - Multi-parent / diamond inheritance between profiles (single-parent `extends=` is supported per `SPEC.md` §2.8.5).
 - Multiple aliases per command.
-- JSON or other machine-readable `--list` format.
+- JSON or other machine-readable `--list` / `--explain` format.
 - Argv-style `--dry-run` output.
-- A `--show` / `--explain` flag distinct from `--dry-run`.
 - Logging or tracing infrastructure.
 
 Adding any of these later is a non-breaking change to the v1 design.
