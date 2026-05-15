@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-05-15
+
+### Added
+
+- `--explain` / `-x` traces how the resolved command was assembled
+  and exits without executing. The header names the program, the
+  loaded config (relative to cwd), the selected profile, and the
+  inheritance chain when one applies. The resolved argv is rendered
+  inline with dim `[N]` markers, each pointing to a numbered footnote
+  that names the contributing tier(s), source `file:line`, and any
+  merge decision worth surfacing — single-mode override, repeat mode,
+  marker (`+`), `#null` ghost (annotated `(#null ghost — no value)`),
+  middle-tier loss in a 3+ tier chain, and `#false` suppression. A
+  dedicated `env:` section lists env-var winners and shadowed
+  lower-tier contributions; `cwd:` names the effective working
+  directory; `suppressed:` lists keys whose every candidate was
+  cleared, alongside the `#false` that cleared them. Mutually
+  exclusive with `--dry-run`, `--list`, and `--completions`.
+
 ## [0.8.3] — 2026-05-15
 
 ### Fixed
@@ -347,7 +366,8 @@ Initial release. v1, Unix only (Linux and macOS).
 - Static shell completion for bash, zsh, fish, elvish, and powershell via
   `clap_complete`.
 
-[Unreleased]: https://github.com/mb1986/jig/compare/v0.8.3...HEAD
+[Unreleased]: https://github.com/mb1986/jig/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/mb1986/jig/releases/tag/v0.9.0
 [0.8.3]: https://github.com/mb1986/jig/releases/tag/v0.8.3
 [0.8.2]: https://github.com/mb1986/jig/releases/tag/v0.8.2
 [0.8.1]: https://github.com/mb1986/jig/releases/tag/v0.8.1
