@@ -1,0 +1,21 @@
+---
+source: tests/integration.rs
+expression: stdout
+---
+program:   some-tool
+config:    jig.kdl
+selected:  quiet
+
+resolved:
+  some-tool [1] --log-file /var/log/foo.log
+
+  [1]  --log-file /var/log/foo.log
+        defaults  jig.kdl:4
+
+suppressed:
+  --timeout
+        defaults  jig.kdl:2  "30"  (cleared by quiet at jig.kdl:7)
+        quiet  jig.kdl:7  #false  (suppressor)
+  --verbose
+        defaults  jig.kdl:3  #true  (cleared by quiet at jig.kdl:8)
+        quiet  jig.kdl:8  #false  (suppressor)

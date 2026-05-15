@@ -1,0 +1,16 @@
+---
+source: tests/integration.rs
+expression: stdout
+---
+program:   foo
+config:    jig.kdl
+selected:  child
+chain:     parent -> child
+
+resolved:
+  foo [1] -x from-child
+
+  [1]  -x from-child      single-mode merge (<=1 unmarked per tier)
+        position from  defaults  jig.kdl:2
+        value    from  child  jig.kdl:9
+        parent  jig.kdl:5  "from-parent"  (lost to higher tier)

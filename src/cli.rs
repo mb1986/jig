@@ -60,6 +60,18 @@ pub struct Cli {
     #[arg(short = 'n', long)]
     pub dry_run: bool,
 
+    /// Trace how the resolved command was assembled (which tier
+    /// supplied each argument, where it was written) and exit
+    /// without executing. Useful when an unexpected flag value
+    /// shows up and you want to know which profile or default
+    /// produced it.
+    #[arg(
+        short = 'x',
+        long,
+        conflicts_with_all = ["dry_run", "list", "completions", "list_commands", "list_profiles"],
+    )]
+    pub explain: bool,
+
     /// Suppress the pre-exec preview line that `jig` writes to
     /// stderr before spawning the resolved command. No effect on
     /// `--dry-run`, `--list`, or any other non-exec path.
@@ -79,7 +91,7 @@ pub struct Cli {
     #[arg(
         long,
         hide = true,
-        conflicts_with_all = ["list", "dry_run", "completions", "list_profiles"],
+        conflicts_with_all = ["list", "dry_run", "explain", "completions", "list_profiles"],
     )]
     pub list_commands: bool,
 
@@ -90,7 +102,7 @@ pub struct Cli {
         long,
         value_name = "COMMAND",
         hide = true,
-        conflicts_with_all = ["list", "dry_run", "completions"],
+        conflicts_with_all = ["list", "dry_run", "explain", "completions"],
     )]
     pub list_profiles: Option<String>,
 

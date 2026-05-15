@@ -1,0 +1,24 @@
+---
+source: tests/integration.rs
+expression: stdout
+---
+program:   foo
+config:    jig.kdl
+selected:  fast
+
+resolved:
+  foo [1] --host 0.0.0.0
+
+  [1]  --host 0.0.0.0
+        defaults  jig.kdl:2
+
+env:
+  A=from-fast
+        fast  jig.kdl:6
+        defaults  jig.kdl:3  "1"  (shadowed)
+  B=2
+        fast  jig.kdl:7
+
+cwd:
+  /srv
+        command  jig.kdl:1

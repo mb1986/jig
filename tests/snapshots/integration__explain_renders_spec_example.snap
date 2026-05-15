@@ -1,0 +1,24 @@
+---
+source: tests/integration.rs
+expression: stdout
+---
+program:   llama-server  (alias: serve)
+config:    jig.kdl
+selected:  qwen-coder-large
+chain:     qwen-coder -> qwen-coder-large
+
+resolved:
+  llama-server [1] --host 0.0.0.0 [2] --port 8090 [3] -m qwen-large.gguf [4] -ngl 999
+
+  [1]  --host 0.0.0.0
+        defaults  jig.kdl:2
+
+  [2]  --port 8090
+        defaults  jig.kdl:3
+
+  [3]  -m qwen-large.gguf      single-mode merge (<=1 unmarked per tier)
+        position from  qwen-coder  jig.kdl:6  (inherited)
+        value    from  qwen-coder-large  jig.kdl:11
+
+  [4]  -ngl 999
+        qwen-coder  jig.kdl:7  (inherited)

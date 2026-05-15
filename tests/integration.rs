@@ -2868,3 +2868,364 @@ fn cwd_list_shows_profile_level_cwd() {
         "no command-level cwd, no command-level cwd: line; stdout: {stdout:?}",
     );
 }
+
+// --- --explain rendering ---
+
+#[test]
+fn explain_emits_to_stdout_with_zero_exit() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "llama-server \"serve\" {\n    host \"0.0.0.0\"\n}\n",
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .env("NO_COLOR", "1")
+        .arg("--explain")
+        .arg("serve")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("program:"))
+        .stdout(predicate::str::contains("resolved:"))
+        // Inline `[1]` marker precedes the first emitted segment;
+        // segment tokens themselves are unchanged.
+        .stdout(predicate::str::contains("llama-server [1] --host 0.0.0.0"))
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn explain_short_form_x_is_accepted() {
+    // The short form `-x` should behave identically to `--explain`.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        "llama-server \"serve\" {\n    host \"0.0.0.0\"\n}\n",
+    )
+    .unwrap();
+    jig()
+        .current_dir(dir.path())
+        .env("NO_COLOR", "1")
+        .arg("-x")
+        .arg("serve")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("resolved:"));
+}
+
+#[test]
+fn explain_conflicts_with_dry_run() {
+    // clap's `conflicts_with_all` should reject `--explain --dry-run`.
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "foo {\n    host \"x\"\n}\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .env("NO_COLOR", "1")
+        .arg("--explain")
+        .arg("--dry-run")
+        .arg("foo")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn explain_renders_spec_example() {
+    // Worked example from the design discussion: defaults set
+    // `--host`/`--port`, `qwen-coder` adds `-m`/`-ngl`, and
+    // `qwen-coder-large extends="qwen-coder"` overrides `-m`.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        r#"llama-server "serve" {
+    host "0.0.0.0"
+    port 8090
+
+    qwen-coder {
+        m "qwen.gguf"
+        -ngl 999
+    }
+
+    qwen-coder-large extends="qwen-coder" {
+        m "qwen-large.gguf"
+    }
+}
+"#,
+    )
+    .unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .env("NO_COLOR", "1")
+        .arg("--explain")
+        .arg("serve")
+        .arg("qwen-coder-large")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    // Structural sanity in addition to the snapshot: the inline
+    // marker `[1]` is present, the override single-mode summary
+    // appears, and the leaf profile name shows under the
+    // `selected:` line. A wholesale insta-accept that wiped these
+    // would silently regress; the assertion lights up.
+    assert!(stdout.contains("[1]"));
+    assert!(stdout.contains("selected:  qwen-coder-large"));
+    assert!(stdout.contains("single-mode merge"));
+    insta::assert_snapshot!(stdout);
+}
+
+#[test]
+fn explain_renders_suppression() {
+    // A `quiet` profile sets every default to `#false`. The argv
+    // ends up empty for those keys; the suppressed-keys section is
+    // the only place the user can find out where the flags went.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        r#"some-tool {
+    timeout 30
+    verbose #true
+    log-file "/var/log/foo.log"
+
+    quiet {
+        timeout #false
+        verbose #false
+    }
+}
+"#,
+    )
+    .unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .env("NO_COLOR", "1")
+        .arg("--explain")
+        .arg("some-tool")
+        .arg("quiet")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    // The `suppressed:` section must appear and identify the
+    // suppressor (`quiet`) with its line number — the whole point
+    // of having the section is that the cleared flags wouldn't
+    // otherwise be visible in argv.
+    assert!(stdout.contains("suppressed:"));
+    assert!(stdout.contains("(suppressor)"));
+    assert!(stdout.contains("(cleared by quiet at "));
+    insta::assert_snapshot!(stdout);
+}
+
+#[test]
+fn explain_renders_null_ghost() {
+    // `log-file #null` declares a position with no value. The
+    // profile's value should emit at the default's position.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        r#"some-tool {
+    timeout 30
+    log-file #null
+
+    p {
+        log-file "/p.log"
+    }
+}
+"#,
+    )
+    .unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .env("NO_COLOR", "1")
+        .arg("--explain")
+        .arg("some-tool")
+        .arg("p")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    // The `#null` ghost wins the single-mode position and the
+    // renderer must say so — otherwise the position contributor
+    // line looks identical to a regular default.
+    assert!(stdout.contains("(#null ghost — no value)"));
+    insta::assert_snapshot!(stdout);
+}
+
+#[test]
+fn explain_renders_three_tier_chain() {
+    // A three-level chain. `--host` is set in defaults and parent →
+    // parent's value wins. `--port` is set in defaults and child →
+    // child wins. `-ngl` is parent-only (inherited). `-m` is
+    // child-only.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        r#"foo {
+    host "0.0.0.0"
+    port 8090
+
+    parent {
+        host "parent-host"
+        -ngl 999
+    }
+
+    child extends="parent" {
+        port 8091
+        m "/p"
+    }
+}
+"#,
+    )
+    .unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .env("NO_COLOR", "1")
+        .arg("--explain")
+        .arg("foo")
+        .arg("child")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    // Three-level inheritance produces a `chain:` line; the
+    // ancestor (`parent`) shows as inherited under its contributor
+    // line.
+    assert!(stdout.contains("chain:     parent -> child"));
+    assert!(stdout.contains("(inherited)"));
+    insta::assert_snapshot!(stdout);
+}
+
+#[test]
+fn explain_renders_middle_tier_loss() {
+    // Three-tier chain where defaults, parent, and child all set
+    // the same flag. Single-mode merge picks defaults' position
+    // (earliest) and child's value (highest tier); parent is left
+    // holding neither role and surfaces under variant C as a
+    // "lost to higher tier" entry.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        r#"foo {
+    x "from-default"
+
+    parent {
+        x "from-parent"
+    }
+
+    child extends="parent" {
+        x "from-child"
+    }
+}
+"#,
+    )
+    .unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .env("NO_COLOR", "1")
+        .arg("--explain")
+        .arg("foo")
+        .arg("child")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    // Sanity: a renderer regression that hid middle-tier losses
+    // would fail here regardless of snapshot drift.
+    assert!(
+        stdout.contains("lost to higher tier"),
+        "expected variant-C middle-tier loss; stdout: {stdout:?}",
+    );
+    assert!(
+        stdout.contains("\"from-parent\""),
+        "expected dropped middle-tier value; stdout: {stdout:?}",
+    );
+    insta::assert_snapshot!(stdout);
+}
+
+#[test]
+fn explain_pads_markers_so_double_digit_text_aligns() {
+    // A config with 10+ emitted segments forces `[10]` as a marker.
+    // Single-digit markers must right-pad with a trailing space so
+    // segment text columns line up — `[1] ` and `[10]` end at the
+    // same width.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        r#"some-tool {
+    a 1
+    b 2
+    c 3
+    d 4
+    e 5
+    f 6
+    g 7
+    h 8
+    i 9
+    j 10
+}
+"#,
+    )
+    .unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .env("NO_COLOR", "1")
+        .arg("--explain")
+        .arg("some-tool")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    // Right-aligned footnote markers: ` [1]` (with leading space)
+    // sits flush against `[10]` so the closing `]` lines up vertically
+    // and segment text starts at the same column for both.
+    assert!(
+        stdout.contains("   [1]  -a 1\n"),
+        "single-digit footnote marker should be left-padded; stdout: {stdout:?}",
+    );
+    assert!(
+        stdout.contains("  [10]  -j 10\n"),
+        "double-digit footnote marker should sit flush; stdout: {stdout:?}",
+    );
+    // Inline leading marker: `[N]` precedes its argument.
+    assert!(
+        stdout.contains("[1] -a 1"),
+        "inline marker should precede its argument; stdout: {stdout:?}",
+    );
+    insta::assert_snapshot!(stdout);
+}
+
+#[test]
+fn explain_renders_env_and_cwd() {
+    // Env vars and cwd should appear in dedicated sections after
+    // the per-segment footnotes.
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("jig.kdl"),
+        r#"foo cwd="/srv" {
+    host "0.0.0.0"
+    (env)A "1"
+
+    fast {
+        (env)A "from-fast"
+        (env)B "2"
+    }
+}
+"#,
+    )
+    .unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .env("NO_COLOR", "1")
+        .arg("--explain")
+        .arg("foo")
+        .arg("fast")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    // Both the `env:` and `cwd:` sections must appear; the shadowed
+    // env contribution should be labelled.
+    assert!(stdout.contains("env:"));
+    assert!(stdout.contains("cwd:"));
+    assert!(stdout.contains("(shadowed)"));
+    insta::assert_snapshot!(stdout);
+}

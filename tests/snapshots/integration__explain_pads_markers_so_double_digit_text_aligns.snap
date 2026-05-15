@@ -1,0 +1,39 @@
+---
+source: tests/integration.rs
+expression: stdout
+---
+program:   some-tool
+config:    jig.kdl
+
+resolved:
+  some-tool [1] -a 1 [2] -b 2 [3] -c 3 [4] -d 4 [5] -e 5 [6] -f 6 [7] -g 7 [8] -h 8 [9] -i 9 [10] -j 10
+
+   [1]  -a 1
+         defaults  jig.kdl:2
+
+   [2]  -b 2
+         defaults  jig.kdl:3
+
+   [3]  -c 3
+         defaults  jig.kdl:4
+
+   [4]  -d 4
+         defaults  jig.kdl:5
+
+   [5]  -e 5
+         defaults  jig.kdl:6
+
+   [6]  -f 6
+         defaults  jig.kdl:7
+
+   [7]  -g 7
+         defaults  jig.kdl:8
+
+   [8]  -h 8
+         defaults  jig.kdl:9
+
+   [9]  -i 9
+         defaults  jig.kdl:10
+
+  [10]  -j 10
+         defaults  jig.kdl:11

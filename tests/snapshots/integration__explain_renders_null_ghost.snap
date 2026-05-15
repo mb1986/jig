@@ -1,0 +1,17 @@
+---
+source: tests/integration.rs
+expression: stdout
+---
+program:   some-tool
+config:    jig.kdl
+selected:  p
+
+resolved:
+  some-tool [1] --timeout 30 [2] --log-file /p.log
+
+  [1]  --timeout 30
+        defaults  jig.kdl:2
+
+  [2]  --log-file /p.log      single-mode merge (<=1 unmarked per tier)
+        position from  defaults  jig.kdl:3  (#null ghost — no value)
+        value    from  p  jig.kdl:6

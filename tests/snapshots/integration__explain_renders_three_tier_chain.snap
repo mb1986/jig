@@ -1,0 +1,25 @@
+---
+source: tests/integration.rs
+expression: stdout
+---
+program:   foo
+config:    jig.kdl
+selected:  child
+chain:     parent -> child
+
+resolved:
+  foo [1] --host parent-host [2] --port 8091 [3] -ngl 999 [4] -m /p
+
+  [1]  --host parent-host      single-mode merge (<=1 unmarked per tier)
+        position from  defaults  jig.kdl:2
+        value    from  parent  jig.kdl:6  (inherited)
+
+  [2]  --port 8091      single-mode merge (<=1 unmarked per tier)
+        position from  defaults  jig.kdl:3
+        value    from  child  jig.kdl:11
+
+  [3]  -ngl 999
+        parent  jig.kdl:7  (inherited)
+
+  [4]  -m /p
+        child  jig.kdl:12

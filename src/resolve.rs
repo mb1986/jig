@@ -44,6 +44,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use miette::SourceSpan;
+
 use crate::config::{
     Argument, Command, CommandChild, Config, EnvEntry, EnvValue, FlagMode, FlagValue,
 };
@@ -87,6 +89,198 @@ pub enum EnvOp {
     },
 }
 
+/// Trace of how a resolution arrived at its argv, env, and cwd.
+/// Returned by [`resolve_with_trace`] alongside [`Resolved`] and
+/// consumed by [`crate::explain`] to render `--explain` output.
+///
+/// One [`SegmentTrace`] is produced for each emitted item in
+/// [`Resolved::args`]; the index correspondence is positional.
+/// Likewise one [`EnvTrace`] per [`EnvOp`] in [`Resolved::env`].
+#[derive(Debug, Clone)]
+pub struct ResolutionTrace {
+    /// Alias of the matched command, if any (e.g. `"serve"`).
+    pub alias: Option<String>,
+    /// Selected profile name (the leaf of the inheritance chain).
+    pub selected_profile: Option<String>,
+    /// Inheritance chain `[root, ..., leaf]`. Empty when no profile
+    /// is selected.
+    pub chain: Vec<String>,
+    /// Per-emitted-argv-segment story, parallel to [`Resolved::args`].
+    pub segments: Vec<SegmentTrace>,
+    /// Keys whose every candidate was suppressed (no argv emission).
+    /// Surfaced by the renderer so vanished flags are explainable.
+    pub suppressed: Vec<SuppressedKey>,
+    /// Per-env-var story, parallel to [`Resolved::env`].
+    pub env: Vec<EnvTrace>,
+    /// cwd resolution outcome.
+    pub cwd: CwdTrace,
+}
+
+/// Story of one emitted argv item. The associated [`Resolved::args`]
+/// entry (looked up by index) carries the rendered tokens; this
+/// struct only carries the merge story.
+#[derive(Debug, Clone)]
+pub struct SegmentTrace {
+    /// One-line description of the merge decision, e.g.
+    /// `"single-mode merge (<=1 unmarked per tier)"`,
+    /// `"repeat mode (this is one of several emissions)"`, or
+    /// `"marker (+) — emits at own position"`. `None` for the trivial
+    /// single-contributor case so the renderer can skip it.
+    pub mode_summary: Option<String>,
+    /// Tiers that won part of the emission (position, value, or both).
+    /// In source-order by tier so the renderer can pair `position
+    /// from` and `value from` lines without reordering.
+    pub contributors: Vec<Contributor>,
+    /// Negative-space facts to surface for this segment: middle-tier
+    /// losses in 3+ tier chains, and `#false` cleared entries that
+    /// the renderer wants to display alongside an emission.
+    pub dropped: Vec<DroppedInfo>,
+}
+
+/// A whole key that was suppressed and produced no argv emission.
+/// The suppressing `#false` itself is included in [`Self::cleared`]
+/// (with reason [`DroppedReason::SelfFalse`]) so the renderer can
+/// list every entry contributing to the key in one place.
+#[derive(Debug, Clone)]
+pub struct SuppressedKey {
+    /// Resolved CLI form (e.g. `"--timeout"`).
+    pub key: String,
+    /// Entries that were cleared, in source order — includes both
+    /// the cleared lower-tier values and the `#false` suppressor.
+    pub cleared: Vec<DroppedInfo>,
+}
+
+/// One tier's contribution to an emitted segment.
+#[derive(Debug, Clone)]
+pub struct Contributor {
+    /// Role this tier played in producing the emission.
+    pub role: ContributorRole,
+    /// Tier index: 0 = defaults, 1..=N = inheritance-chain index.
+    pub tier: usize,
+    /// `"defaults"` for tier 0, profile name otherwise.
+    pub tier_label: String,
+    /// Source position of the contributing entry, when known. `None`
+    /// for positional arguments (the parser does not currently track
+    /// spans for positionals).
+    pub span: Option<SourceSpan>,
+    /// True when this tier is an ancestor in the inheritance chain
+    /// (not the selected leaf, not defaults). Renders as
+    /// `"(inherited)"` in `--explain` output.
+    pub inherited: bool,
+    /// True when this contributor is a `#null` ghost — it supplied
+    /// a position but no value (`SPEC.md` §2.4.3). The renderer adds
+    /// a `(#null ghost — no value)` hint so the user can tell a
+    /// ghost-position-winner from a regular default.
+    pub ghost: bool,
+}
+
+/// What part of an emission a contributor supplied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContributorRole {
+    /// Only contributor to this segment; no winner-talk needed.
+    /// Used both for trivially-single-source emissions and for
+    /// single-mode merges where the same tier supplied both
+    /// position and value.
+    Sole,
+    /// Single-mode merge — this tier supplied position only.
+    PositionOnly,
+    /// Single-mode merge — this tier supplied value only.
+    ValueOnly,
+    /// `+`-marked entry, always emits at own position.
+    Marker,
+    /// One emission of a repeat-mode group.
+    Repeat,
+}
+
+/// One entry that was dropped during resolution.
+#[derive(Debug, Clone)]
+pub struct DroppedInfo {
+    /// Tier index of the dropped entry.
+    pub tier: usize,
+    /// `"defaults"` for tier 0, profile name otherwise.
+    pub tier_label: String,
+    /// Source position of the dropped entry.
+    pub span: SourceSpan,
+    /// Rendered value as it appeared in the config, e.g. `"\"x\""`,
+    /// `"#false"`, `"#null"`.
+    pub rendered_value: String,
+    /// Why this entry didn't reach argv.
+    pub reason: DroppedReason,
+}
+
+/// Why a `DroppedInfo` entry was dropped.
+#[derive(Debug, Clone)]
+pub enum DroppedReason {
+    /// Cleared by a `#false` at a higher tier; the suppressing
+    /// `#false`'s tier and position are named so the renderer can
+    /// point at it.
+    SuppressedByFalse {
+        /// Tier label of the suppressing `#false`.
+        by_tier_label: String,
+        /// Source position of the suppressing `#false`.
+        by_span: SourceSpan,
+    },
+    /// Lost both position and value to a higher tier in a single-mode
+    /// merge across 3+ tiers (a middle tier with no role).
+    MiddleTierLost,
+    /// `#false` entry itself (which never emits regardless of tier).
+    SelfFalse,
+}
+
+/// Story of one resolved env-var outcome.
+#[derive(Debug, Clone)]
+pub struct EnvTrace {
+    /// Resolved outcome (parallel to [`Resolved::env`]). The
+    /// variable name lives inside the `outcome`.
+    pub outcome: EnvOp,
+    /// Tier that supplied the winning outcome.
+    pub winner_tier: usize,
+    /// `"defaults"` for tier 0, profile name otherwise.
+    pub winner_tier_label: String,
+    /// Source position of the winning entry.
+    pub winner_span: SourceSpan,
+    /// True when the winning tier is a chain ancestor.
+    pub winner_inherited: bool,
+    /// Lower-tier contributions that were shadowed.
+    pub shadowed: Vec<EnvShadowed>,
+}
+
+/// One lower-tier env-var contribution that lost to a higher tier.
+#[derive(Debug, Clone)]
+pub struct EnvShadowed {
+    /// Tier index.
+    pub tier: usize,
+    /// `"defaults"` for tier 0, profile name otherwise.
+    pub tier_label: String,
+    /// Source position.
+    pub span: SourceSpan,
+    /// The value at that tier (`Set("...")` or `Unset`).
+    pub value: EnvValue,
+}
+
+/// Outcome of cwd resolution.
+#[derive(Debug, Clone)]
+pub enum CwdTrace {
+    /// No `cwd=` resolved; child inherits `jig`'s working directory.
+    Inherited,
+    /// Resolved from a `cwd=` somewhere in the config.
+    Resolved {
+        /// Source-text value as written.
+        source: String,
+        /// Final absolute path after anchoring.
+        resolved: PathBuf,
+        /// Tier index that supplied the value (0 = command-level,
+        /// 1..=N = inheritance-chain index).
+        tier: usize,
+        /// `"command"` for tier 0, profile name otherwise.
+        tier_label: String,
+        /// Source position of the `cwd=` value.
+        span: SourceSpan,
+        /// True when the tier is a chain ancestor.
+        inherited: bool,
+    },
+}
+
 /// Resolve `name` and optional `profile` against `config`.
 ///
 /// `config_dir` is the directory containing the loaded config file
@@ -104,6 +298,46 @@ pub fn resolve(
     profile: Option<&str>,
     config_dir: &Path,
 ) -> Result<Resolved> {
+    let (resolved, _) = resolve_inner(config, name, profile, config_dir, false)?;
+    Ok(resolved)
+}
+
+/// Resolve `name` and optional `profile` and return a [`Resolved`]
+/// plus a [`ResolutionTrace`] describing how each emitted argument,
+/// env-var, and cwd outcome was reached. The trace fuels
+/// `--explain` output.
+///
+/// The trace adds bookkeeping work — small but non-zero — over
+/// [`resolve`]. Hot paths that do not need the trace (`exec::run`,
+/// `--dry-run`) should keep using [`resolve`].
+///
+/// # Errors
+///
+/// Same as [`resolve`].
+pub fn resolve_with_trace(
+    config: &Config,
+    name: &str,
+    profile: Option<&str>,
+    config_dir: &Path,
+) -> Result<(Resolved, ResolutionTrace)> {
+    let (resolved, trace) = resolve_inner(config, name, profile, config_dir, true)?;
+    Ok((
+        resolved,
+        trace.expect("invariant: trace requested but not produced"),
+    ))
+}
+
+/// Shared body for [`resolve`] / [`resolve_with_trace`]. When
+/// `want_trace` is `false` the optional trace stays empty and no
+/// bookkeeping work is done.
+#[allow(clippy::too_many_lines)] // The merge + trace assembly belong together.
+fn resolve_inner(
+    config: &Config,
+    name: &str,
+    profile: Option<&str>,
+    config_dir: &Path,
+    want_trace: bool,
+) -> Result<(Resolved, Option<ResolutionTrace>)> {
     let cmd = lookup_command(config, name)?;
     let selected_profile = match profile {
         None => None,
@@ -152,8 +386,16 @@ pub fn resolve(
         }
     }
     let mut emit_value: HashMap<usize, FlagValue> = HashMap::new();
-    for indices in by_key.values() {
-        plan_key(&candidates, indices, &mut emit_value);
+    // For tracing: per-key plan info, keyed by resolved CLI form.
+    // `None` on the cheap (non-trace) path so plan_key skips the
+    // bookkeeping entirely.
+    let mut key_traces: Option<HashMap<String, KeyPlanTrace>> = want_trace.then(HashMap::new);
+    for (key, indices) in &by_key {
+        let mut trace_slot = want_trace.then(KeyPlanTrace::default);
+        plan_key(&candidates, indices, &mut emit_value, trace_slot.as_mut());
+        if let (Some(t), Some(map)) = (trace_slot, key_traces.as_mut()) {
+            map.insert(key.clone(), t);
+        }
     }
 
     // Step 6: resolve env-var contributions on a parallel channel.
@@ -177,24 +419,46 @@ pub fn resolve(
 
     // Assemble: positionals always emit; flags emit iff they appear
     // in the plan, taking the planned value (which is what makes
-    // profile override work in single mode).
+    // profile override work in single mode). The trace path also
+    // stashes the per-emission candidate-walk index and the key
+    // string so the trace builder below can recover each segment's
+    // origin without re-walking the candidate list; the no-trace
+    // path skips both, matching the pre-feature allocation profile.
     let mut out: Vec<Argument> = Vec::with_capacity(candidates.len());
-    for (i, (arg, _)) in candidates.into_iter().enumerate() {
+    let mut emit_walk_idx: Option<Vec<usize>> =
+        want_trace.then(|| Vec::with_capacity(candidates.len()));
+    let mut emit_keys: Option<Vec<Option<String>>> =
+        want_trace.then(|| Vec::with_capacity(candidates.len()));
+    for (i, (arg, _)) in candidates.iter().enumerate() {
         match arg {
-            Argument::Positional(_) => out.push(arg),
+            Argument::Positional(_) => {
+                out.push(arg.clone());
+                if let Some(idxs) = emit_walk_idx.as_mut() {
+                    idxs.push(i);
+                }
+                if let Some(keys) = emit_keys.as_mut() {
+                    keys.push(None);
+                }
+            }
             Argument::Flag {
                 key,
                 key_span,
-                value: _,
                 mode,
+                ..
             } => {
                 if let Some(value) = emit_value.remove(&i) {
                     out.push(Argument::Flag {
-                        key,
-                        key_span,
+                        key: key.clone(),
+                        key_span: *key_span,
                         value,
-                        mode,
+                        mode: *mode,
                     });
+                    if let Some(idxs) = emit_walk_idx.as_mut() {
+                        idxs.push(i);
+                    }
+                    if let Some(keys) = emit_keys.as_mut() {
+                        keys.push(Some(key.to_cli_flag()));
+                    }
                 }
             }
         }
@@ -202,12 +466,43 @@ pub fn resolve(
 
     let cwd = effective_cwd(cmd, &chain, config_dir);
 
-    Ok(Resolved {
-        program: cmd.name.clone(),
-        args: out,
-        env,
-        cwd,
-    })
+    let trace = if want_trace {
+        let key_traces = key_traces.expect("invariant: want_trace ⇒ key_traces is Some");
+        let emit_walk_idx = emit_walk_idx.expect("invariant: want_trace ⇒ emit_walk_idx is Some");
+        let emit_keys = emit_keys.expect("invariant: want_trace ⇒ emit_keys is Some");
+        let cwd_trace = build_cwd_trace(cmd, &chain, config_dir);
+        let env_trace = build_env_trace(&per_tier_env, &chain);
+        let (segments, suppressed) = build_segment_traces(
+            &candidates,
+            &chain,
+            &by_key,
+            &key_traces,
+            &out,
+            &emit_walk_idx,
+            &emit_keys,
+        );
+        Some(ResolutionTrace {
+            alias: cmd.alias.clone(),
+            selected_profile: selected_profile.map(str::to_string),
+            chain: chain.iter().map(|s| (*s).to_string()).collect(),
+            segments,
+            suppressed,
+            env: env_trace,
+            cwd: cwd_trace,
+        })
+    } else {
+        None
+    };
+
+    Ok((
+        Resolved {
+            program: cmd.name.clone(),
+            args: out,
+            env,
+            cwd,
+        },
+        trace,
+    ))
 }
 
 /// Compute the effective working directory per `SPEC.md` §2.12.3.
@@ -304,10 +599,27 @@ fn pick_env_outcome(name: &str, per_tier_env: &[&[EnvEntry]]) -> EnvOp {
 /// root ancestor, …, N for the selected leaf. With no inheritance
 /// the rules degenerate to the two-tier algorithm; the existing
 /// merge tests verify that byte-for-byte.
+///
+/// When `trace` is `Some`, the merge decision is recorded for the
+/// caller (used by [`resolve_with_trace`]); when `None`, no trace
+/// work is performed so the existing `resolve` hot path keeps the
+/// same allocation profile it had before tracing was added.
+//
+// The tracing side-effects sit inline with the merge stages
+// (suppression → marker → mode selection → emission) because each
+// stage's decision feeds the next. Pulling them into helpers would
+// require threading the same five locals through extra function
+// boundaries with no clarity gain.
+//
+// `as_deref_mut` is needed (not redundant) because `trace` is
+// re-borrowed across multiple stage blocks; consuming it on the
+// first stage would leave nothing for the rest.
+#[allow(clippy::too_many_lines, clippy::needless_option_as_deref)]
 fn plan_key(
     candidates: &[(Argument, usize)],
     indices: &[usize],
     emit_value: &mut HashMap<usize, FlagValue>,
+    mut trace: Option<&mut KeyPlanTrace>,
 ) {
     struct Entry<'a> {
         idx: usize,
@@ -358,11 +670,43 @@ fn plan_key(
         })
         .collect();
 
+    if let Some(t) = trace.as_deref_mut() {
+        t.max_false_tier = max_false_tier;
+        if let Some(tt) = max_false_tier {
+            t.suppression_sources = entries
+                .iter()
+                .filter(|e| e.tier == tt && matches!(e.value, FlagValue::Bool(false)))
+                .map(|e| e.idx)
+                .collect();
+        }
+        for e in &entries {
+            let fate = if matches!(e.value, FlagValue::Bool(false)) {
+                CandidateFate::SelfFalse
+            } else if matches!(e.value, FlagValue::Null) {
+                // Updated below once we know if the ghost's position
+                // was picked.
+                CandidateFate::NullGhostUnused
+            } else if let Some(tt) = max_false_tier
+                && e.tier < tt
+            {
+                CandidateFate::SuppressedByFalse
+            } else {
+                CandidateFate::Pending
+            };
+            t.fates.insert(e.idx, fate);
+        }
+    }
+
     // Marked entries always emit at their own position, regardless
     // of unmarked-side mode. `#null` is rejected by the parser
     // when combined with `+`, so a marked survivor is never null.
+    let mut any_marker = false;
     for e in surviving.iter().filter(|e| e.mode == FlagMode::Append) {
         emit_value.insert(e.idx, e.value.clone());
+        any_marker = true;
+        if let Some(t) = trace.as_deref_mut() {
+            t.fates.insert(e.idx, CandidateFate::Marker);
+        }
     }
 
     // Unmarked entries decide single-mode vs repeat-mode.
@@ -371,6 +715,13 @@ fn plan_key(
         .filter(|e| e.mode == FlagMode::Plain)
         .collect();
     if unmarked.is_empty() {
+        if let Some(t) = trace.as_deref_mut() {
+            t.mode = if any_marker {
+                KeyMergeMode::MarkerOnly
+            } else {
+                KeyMergeMode::AllSuppressed
+            };
+        }
         return;
     }
 
@@ -390,30 +741,634 @@ fn plan_key(
         // contributes only its source position to the first-
         // occurrence pool; it never supplies a value. Value comes
         // from the highest-tier survivor.
-        let ghost_idxs = entries
+        let ghost_idxs: Vec<usize> = entries
             .iter()
             .filter(|e| matches!(e.value, FlagValue::Null))
             .filter(|e| max_false_tier.is_none_or(|t| e.tier >= t))
-            .map(|e| e.idx);
+            .map(|e| e.idx)
+            .collect();
         let pos_idx = unmarked
             .iter()
             .map(|e| e.idx)
-            .chain(ghost_idxs)
+            .chain(ghost_idxs.iter().copied())
             .min()
             .expect("invariant: unmarked is non-empty");
-        let value = unmarked
+        let value_winner = unmarked
             .iter()
             .max_by_key(|e| e.tier)
-            .expect("invariant: unmarked is non-empty")
-            .value
-            .clone();
+            .expect("invariant: unmarked is non-empty");
+        let value = value_winner.value.clone();
+        let value_winner_idx = value_winner.idx;
         emit_value.insert(pos_idx, value);
+
+        if let Some(t) = trace.as_deref_mut() {
+            t.mode = if any_marker {
+                KeyMergeMode::SingleAndMarker
+            } else {
+                KeyMergeMode::Single
+            };
+            // Update ghost fate: if the position winner is a ghost
+            // (i.e. its candidate idx is among ghost_idxs), record
+            // that. Otherwise the ghosts stay marked Unused.
+            if ghost_idxs.contains(&pos_idx) {
+                t.fates
+                    .insert(pos_idx, CandidateFate::NullGhostPositionUsed);
+            }
+            // Decide role of each unmarked survivor.
+            for e in &unmarked {
+                let role = if e.idx == pos_idx && e.idx == value_winner_idx {
+                    CandidateFate::SinglePositionAndValue
+                } else if e.idx == pos_idx {
+                    CandidateFate::SinglePositionOnly { value_winner_idx }
+                } else if e.idx == value_winner_idx {
+                    // Position came from another candidate (or a ghost).
+                    CandidateFate::SingleValueOnly {
+                        position_winner_idx: pos_idx,
+                    }
+                } else {
+                    CandidateFate::LostMiddle
+                };
+                t.fates.insert(e.idx, role);
+            }
+        }
     } else {
         // Repeat mode: every unmarked occurrence emits in place.
         for e in &unmarked {
             emit_value.insert(e.idx, e.value.clone());
+            if let Some(t) = trace.as_deref_mut() {
+                t.fates.insert(e.idx, CandidateFate::Repeat);
+            }
+        }
+        if let Some(t) = trace.as_deref_mut() {
+            t.mode = if any_marker {
+                KeyMergeMode::RepeatAndMarker
+            } else {
+                KeyMergeMode::Repeat
+            };
         }
     }
+}
+
+/// Internal: per-key merge decision, collected when [`plan_key`] is
+/// invoked with a trace slot. Records enough detail for the renderer
+/// to reconstruct contributors, dropped entries, and mode summaries
+/// without re-running the merge logic.
+#[derive(Debug, Default)]
+struct KeyPlanTrace {
+    /// Resolved mode (`Single`, `Repeat`, `MarkerOnly`, mixed, or
+    /// `AllSuppressed`).
+    mode: KeyMergeMode,
+    /// `max_false_tier` from the suppression cascade, if any.
+    max_false_tier: Option<usize>,
+    /// Candidate indices of the `#false` entries at
+    /// `tier == max_false_tier` (the ones that triggered the
+    /// cascade).
+    suppression_sources: Vec<usize>,
+    /// Per-candidate fate keyed by walk index.
+    fates: HashMap<usize, CandidateFate>,
+}
+
+/// Overall mode the merge resolved to for one key.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum KeyMergeMode {
+    /// No emissions; either every entry is `#false` / fully
+    /// suppressed, or the key group is empty.
+    #[default]
+    AllSuppressed,
+    /// One unmarked emission, possibly synthesised from multiple
+    /// tiers (position from earliest, value from highest).
+    Single,
+    /// Multiple unmarked emissions (some tier had ≥ 2 survivors).
+    Repeat,
+    /// Only `+`-marked entries survived; no unmarked emission.
+    MarkerOnly,
+    /// Unmarked single-mode emission plus one or more marker (`+`)
+    /// emissions in the same key group.
+    SingleAndMarker,
+    /// Unmarked repeat-mode emissions plus one or more marker (`+`)
+    /// emissions in the same key group.
+    RepeatAndMarker,
+}
+
+/// Per-candidate decision recorded by [`plan_key`] when tracing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CandidateFate {
+    /// Placeholder during the trace build — should never escape.
+    Pending,
+    /// `#false` entry; itself never emits.
+    SelfFalse,
+    /// Suppressed by a higher-tier `#false`.
+    SuppressedByFalse,
+    /// `#null` ghost whose position was not picked.
+    NullGhostUnused,
+    /// `#null` ghost whose position became the single-mode emit point.
+    NullGhostPositionUsed,
+    /// `+`-marked entry, emits at its own position.
+    Marker,
+    /// Single mode: sole emitter — supplied both position and value.
+    SinglePositionAndValue,
+    /// Single mode: this candidate's position was picked, value came
+    /// from another tier (held in `value_winner_idx`).
+    SinglePositionOnly { value_winner_idx: usize },
+    /// Single mode: this candidate's value won, position came from
+    /// another candidate (held in `position_winner_idx`).
+    SingleValueOnly { position_winner_idx: usize },
+    /// Single mode: this candidate lost both position and value
+    /// (middle tier in a 3+ tier merge).
+    LostMiddle,
+    /// Repeat mode: one of N unmarked emissions; emits at own idx.
+    Repeat,
+}
+
+/// Stringify a tier index against the inheritance chain: `"defaults"`
+/// for tier 0, otherwise the profile name at the matching chain
+/// index (1-based). `chain` is `[root, …, leaf]`.
+fn tier_label(tier: usize, chain: &[&str]) -> String {
+    if tier == 0 {
+        "defaults".to_string()
+    } else {
+        chain[tier - 1].to_string()
+    }
+}
+
+/// Whether a tier is a chain ancestor (not defaults, not the leaf).
+/// Used to decide whether to render the `(inherited)` annotation.
+const fn is_inherited(tier: usize, chain_len: usize) -> bool {
+    tier > 0 && tier < chain_len
+}
+
+/// Render a [`FlagValue`] back to the literal-ish form it took in
+/// the config, for display in `--explain` drop lines and footnotes.
+/// Used purely for human-readable output — never for argv emission.
+fn render_flag_value(v: &FlagValue) -> String {
+    match v {
+        FlagValue::Bool(true) => "#true".to_string(),
+        FlagValue::Bool(false) => "#false".to_string(),
+        FlagValue::Null => "#null".to_string(),
+        // Quote literals so the user can tell `"123"` (a string) from
+        // `123` (a number) in the trace; the difference doesn't show
+        // up in argv but it's relevant when reading the config.
+        FlagValue::Literal(s) => format!("\"{s}\""),
+    }
+}
+
+/// Build a [`CwdTrace`] mirroring [`effective_cwd`]'s walk. Returns
+/// `CwdTrace::Inherited` when nothing in the config supplies a `cwd=`.
+fn build_cwd_trace(cmd: &Command, chain: &[&str], config_dir: &Path) -> CwdTrace {
+    // Walk leaf-first; first profile with a `cwd=` wins.
+    for profile_name in chain.iter().rev() {
+        let position = chain.iter().position(|p| p == profile_name);
+        let cwd = cmd.children.iter().find_map(|c| match c {
+            CommandChild::Profile { name, cwd, .. } if name == *profile_name => cwd.as_ref(),
+            _ => None,
+        });
+        if let Some((path, span)) = cwd {
+            let resolved = resolve_cwd_path(path, config_dir);
+            let tier = position
+                .expect("invariant: profile_name comes from chain so it has a position")
+                + 1;
+            return CwdTrace::Resolved {
+                source: path.clone(),
+                resolved,
+                tier,
+                tier_label: (*profile_name).to_string(),
+                span: *span,
+                inherited: is_inherited(tier, chain.len()),
+            };
+        }
+    }
+    if let Some((path, span)) = cmd.cwd.as_ref() {
+        let resolved = resolve_cwd_path(path, config_dir);
+        return CwdTrace::Resolved {
+            source: path.clone(),
+            resolved,
+            tier: 0,
+            tier_label: "command".to_string(),
+            span: *span,
+            inherited: false,
+        };
+    }
+    CwdTrace::Inherited
+}
+
+/// Build the per-env-var trace mirror of [`resolve_env`]'s output.
+/// For each variable name the winner is the highest tier with an
+/// outcome; lower-tier contributions for the same name become
+/// `shadowed` entries in tier order.
+fn build_env_trace(per_tier_env: &[&[EnvEntry]], chain: &[&str]) -> Vec<EnvTrace> {
+    // Names in first-occurrence order across the ascending walk —
+    // matches the order produced by `resolve_env` so the trace is
+    // parallel to `Resolved::env`.
+    let mut first_index: HashMap<&str, usize> = HashMap::new();
+    let mut order: Vec<&str> = Vec::new();
+    for slice in per_tier_env {
+        for entry in *slice {
+            if !first_index.contains_key(entry.name.as_str()) {
+                first_index.insert(entry.name.as_str(), order.len());
+                order.push(entry.name.as_str());
+            }
+        }
+    }
+
+    order
+        .iter()
+        .map(|name| {
+            // Find every tier that has an outcome for `name`, in
+            // ascending tier order. The last one is the winner.
+            let mut all: Vec<(usize, &EnvEntry)> = Vec::new();
+            for (tier, slice) in per_tier_env.iter().enumerate() {
+                if let Some(entry) = slice.iter().find(|e| e.name == *name) {
+                    all.push((tier, entry));
+                }
+            }
+            let &(winner_tier, winner_entry) = all
+                .last()
+                .expect("invariant: name came from one of the tier slices");
+            let outcome = match &winner_entry.value {
+                EnvValue::Set(v) => EnvOp::Set {
+                    name: (*name).to_string(),
+                    value: v.clone(),
+                },
+                EnvValue::Unset => EnvOp::Unset {
+                    name: (*name).to_string(),
+                },
+            };
+            let shadowed: Vec<EnvShadowed> = all
+                .iter()
+                .take(all.len().saturating_sub(1))
+                .map(|(tier, entry)| EnvShadowed {
+                    tier: *tier,
+                    tier_label: tier_label(*tier, chain),
+                    span: entry.name_span,
+                    value: entry.value.clone(),
+                })
+                .collect();
+            EnvTrace {
+                outcome,
+                winner_tier,
+                winner_tier_label: tier_label(winner_tier, chain),
+                winner_span: winner_entry.name_span,
+                winner_inherited: is_inherited(winner_tier, chain.len()),
+                shadowed,
+            }
+        })
+        .collect()
+}
+
+/// Build the per-segment trace and the per-key suppression list
+/// from the post-merge state. `out` is the assembled argv,
+/// `emit_walk_idx[k]` is the candidate walk-index that produced
+/// `out[k]`, and `emit_keys[k]` is the resolved CLI form for flag
+/// emissions (or `None` for positionals).
+fn build_segment_traces(
+    candidates: &[(Argument, usize)],
+    chain: &[&str],
+    by_key: &HashMap<String, Vec<usize>>,
+    key_traces: &HashMap<String, KeyPlanTrace>,
+    out: &[Argument],
+    emit_walk_idx: &[usize],
+    emit_keys: &[Option<String>],
+) -> (Vec<SegmentTrace>, Vec<SuppressedKey>) {
+    let mut segments: Vec<SegmentTrace> = Vec::with_capacity(out.len());
+    // Track per-key whether we've already attached its dropped
+    // entries to an emission. In repeat mode several emissions share
+    // a key; we attach drops to the first only to avoid duplication.
+    let mut drops_attached: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for k in 0..out.len() {
+        let walk_idx = emit_walk_idx[k];
+        match &emit_keys[k] {
+            None => {
+                let tier = candidates[walk_idx].1;
+                segments.push(SegmentTrace {
+                    mode_summary: None,
+                    contributors: vec![Contributor {
+                        role: ContributorRole::Sole,
+                        tier,
+                        tier_label: tier_label(tier, chain),
+                        span: None,
+                        inherited: is_inherited(tier, chain.len()),
+                        // Positionals never come from `#null` ghosts.
+                        ghost: false,
+                    }],
+                    dropped: vec![],
+                });
+            }
+            Some(key) => {
+                let key_trace = &key_traces[key];
+                let indices = &by_key[key];
+                let attach_drops = drops_attached.insert(key.clone());
+                let segment = build_flag_segment_trace(
+                    walk_idx,
+                    key_trace,
+                    candidates,
+                    indices,
+                    chain,
+                    attach_drops,
+                );
+                segments.push(segment);
+            }
+        }
+    }
+
+    let suppressed = build_suppressed_keys(candidates, chain, by_key, key_traces);
+    (segments, suppressed)
+}
+
+/// Build the suppressed-keys list: every key whose candidates all
+/// resolved to no argv emission (`AllSuppressed`). Sorted by the
+/// earliest source span among the cleared entries so the renderer
+/// presents keys in config order.
+fn build_suppressed_keys(
+    candidates: &[(Argument, usize)],
+    chain: &[&str],
+    by_key: &HashMap<String, Vec<usize>>,
+    key_traces: &HashMap<String, KeyPlanTrace>,
+) -> Vec<SuppressedKey> {
+    let mut suppressed: Vec<SuppressedKey> = Vec::new();
+    for (key, indices) in by_key {
+        let key_trace = &key_traces[key];
+        // Only keys whose entire group resolved to no argv emission
+        // belong here. `MarkerOnly`, `SingleAndMarker`, and
+        // `RepeatAndMarker` all emit at least one segment, so their
+        // story is already in `SegmentTrace::dropped`; the other
+        // `Single` / `Repeat` modes emit by definition. A new
+        // `KeyMergeMode` variant would need to be classified
+        // explicitly here.
+        if !matches!(key_trace.mode, KeyMergeMode::AllSuppressed) {
+            continue;
+        }
+        let (by_tier_label, by_span) = suppression_source(key_trace, candidates, chain, indices);
+        let mut cleared: Vec<DroppedInfo> = Vec::new();
+        for &i in indices {
+            let (arg, tier) = &candidates[i];
+            let Argument::Flag {
+                value, key_span, ..
+            } = arg
+            else {
+                unreachable!("invariant: by_key only references flag candidates");
+            };
+            let reason = match key_trace.fates.get(&i).copied() {
+                Some(CandidateFate::SelfFalse) => DroppedReason::SelfFalse,
+                Some(CandidateFate::SuppressedByFalse) => DroppedReason::SuppressedByFalse {
+                    by_tier_label: by_tier_label.clone(),
+                    by_span,
+                },
+                _ => continue,
+            };
+            cleared.push(DroppedInfo {
+                tier: *tier,
+                tier_label: tier_label(*tier, chain),
+                span: *key_span,
+                rendered_value: render_flag_value(value),
+                reason,
+            });
+        }
+        // A key whose only entries are `#null` ghosts resolves to
+        // `AllSuppressed` (ghosts never survive the unmarked filter
+        // and never trigger suppression), but no actual suppression
+        // happened — the user just declared a placeholder that no
+        // profile filled. Skip these so the renderer doesn't print
+        // a misleading "suppressed: --a" stub with no rows.
+        if cleared.is_empty() {
+            continue;
+        }
+        suppressed.push(SuppressedKey {
+            key: key.clone(),
+            cleared,
+        });
+    }
+    // `by_key` is a HashMap, so the loop above produces suppressed
+    // entries in non-deterministic order. Sort by the earliest
+    // source span among cleared entries so the renderer's output
+    // tracks the order the user wrote the keys in the config.
+    suppressed.sort_by_key(|s| {
+        s.cleared
+            .iter()
+            .map(|d| d.span.offset())
+            .min()
+            .unwrap_or(usize::MAX)
+    });
+    suppressed
+}
+
+/// Find the suppressing `#false` for a key: the highest-tier `#false`
+/// when one exists, falling back to a tier-0 self-`#false` (whose
+/// own clearing is the only fact to report). Returns the source
+/// position and tier label of that entry.
+fn suppression_source(
+    key_trace: &KeyPlanTrace,
+    candidates: &[(Argument, usize)],
+    chain: &[&str],
+    indices: &[usize],
+) -> (String, SourceSpan) {
+    if key_trace.suppression_sources.is_empty() {
+        // Tier-0 self-#false case: find any SelfFalse candidate so
+        // the renderer has a span to point at.
+        let sf_idx = indices
+            .iter()
+            .copied()
+            .find(|&i| matches!(key_trace.fates.get(&i), Some(CandidateFate::SelfFalse)));
+        sf_idx.map_or_else(
+            || (String::new(), SourceSpan::from((0, 0))),
+            |i| {
+                let (tier, span) = flag_meta(candidates, i);
+                (tier_label(tier, chain), span)
+            },
+        )
+    } else {
+        let i = key_trace.suppression_sources[0];
+        let (tier, span) = flag_meta(candidates, i);
+        (tier_label(tier, chain), span)
+    }
+}
+
+/// Build a [`SegmentTrace`] for one flag emission.
+///
+/// `walk_idx` is the candidate index that emitted (i.e. the entry
+/// stored in [`Resolved::args`] for this segment). `attach_drops`
+/// is `true` for the first emission of a given key in repeat mode
+/// (so `dropped` and middle-tier losses are not duplicated across
+/// sibling emissions); for the second and later emissions of the
+/// same key, drops are intentionally left empty.
+fn build_flag_segment_trace(
+    walk_idx: usize,
+    key_trace: &KeyPlanTrace,
+    candidates: &[(Argument, usize)],
+    indices: &[usize],
+    chain: &[&str],
+    attach_drops: bool,
+) -> SegmentTrace {
+    let fate = key_trace
+        .fates
+        .get(&walk_idx)
+        .copied()
+        .expect("invariant: emitted candidate has a recorded fate");
+
+    let (mode_summary, contributors) =
+        flag_contributors(walk_idx, fate, key_trace, candidates, chain);
+
+    let dropped = if attach_drops {
+        collect_segment_drops(key_trace, candidates, indices, chain)
+    } else {
+        Vec::new()
+    };
+
+    SegmentTrace {
+        mode_summary,
+        contributors,
+        dropped,
+    }
+}
+
+/// Pull a candidate's tier and key span out of the candidate list.
+/// Encapsulates the `Argument::Flag` destructuring so callers stay
+/// out of the unreachable-arm dance.
+fn flag_meta(candidates: &[(Argument, usize)], idx: usize) -> (usize, SourceSpan) {
+    let (arg, tier) = &candidates[idx];
+    let Argument::Flag { key_span, .. } = arg else {
+        unreachable!("invariant: by_key only references flag candidates");
+    };
+    (*tier, *key_span)
+}
+
+/// Build the contributor list (plus mode summary) for one emission
+/// given its fate. Handles the trivial single-contributor cases
+/// (`mode_summary = None`) as well as the multi-tier merges.
+/// Mode summary surfaced for every single-mode merge that spans more
+/// than one tier. Centralised so future wording tweaks are a one-
+/// place edit.
+const SINGLE_MODE_SUMMARY: &str = "single-mode merge (<=1 unmarked per tier)";
+
+fn flag_contributors(
+    walk_idx: usize,
+    fate: CandidateFate,
+    key_trace: &KeyPlanTrace,
+    candidates: &[(Argument, usize)],
+    chain: &[&str],
+) -> (Option<String>, Vec<Contributor>) {
+    let make = |role: ContributorRole, idx: usize| -> Contributor {
+        let (tier, span) = flag_meta(candidates, idx);
+        let ghost = matches!(
+            candidates[idx].0,
+            Argument::Flag {
+                value: FlagValue::Null,
+                ..
+            }
+        );
+        Contributor {
+            role,
+            tier,
+            tier_label: tier_label(tier, chain),
+            span: Some(span),
+            inherited: is_inherited(tier, chain.len()),
+            ghost,
+        }
+    };
+
+    match fate {
+        CandidateFate::Marker => (
+            Some("marker (+) — emits at own position".to_string()),
+            vec![make(ContributorRole::Marker, walk_idx)],
+        ),
+        CandidateFate::Repeat => (
+            Some("repeat mode — every unmarked occurrence emits at its own position".to_string()),
+            vec![make(ContributorRole::Repeat, walk_idx)],
+        ),
+        CandidateFate::SinglePositionAndValue => {
+            (None, vec![make(ContributorRole::Sole, walk_idx)])
+        }
+        CandidateFate::SinglePositionOnly { value_winner_idx } => (
+            Some(SINGLE_MODE_SUMMARY.to_string()),
+            vec![
+                make(ContributorRole::PositionOnly, walk_idx),
+                make(ContributorRole::ValueOnly, value_winner_idx),
+            ],
+        ),
+        CandidateFate::SingleValueOnly {
+            position_winner_idx,
+        } => (
+            Some(SINGLE_MODE_SUMMARY.to_string()),
+            // List position before value so the renderer's
+            // `position from / value from` order is determined by
+            // the trace, not by the renderer.
+            vec![
+                make(ContributorRole::PositionOnly, position_winner_idx),
+                make(ContributorRole::ValueOnly, walk_idx),
+            ],
+        ),
+        CandidateFate::NullGhostPositionUsed => {
+            // Position is a `#null` ghost; the value came from the
+            // value winner — find it via the fates map.
+            let value_winner_idx = key_trace
+                .fates
+                .iter()
+                .find_map(|(idx, f)| match f {
+                    CandidateFate::SingleValueOnly { .. }
+                    | CandidateFate::SinglePositionAndValue => Some(*idx),
+                    _ => None,
+                })
+                .unwrap_or(walk_idx);
+            (
+                Some(SINGLE_MODE_SUMMARY.to_string()),
+                vec![
+                    make(ContributorRole::PositionOnly, walk_idx),
+                    make(ContributorRole::ValueOnly, value_winner_idx),
+                ],
+            )
+        }
+        // Defensive: should not be reached because non-emitting
+        // fates do not produce a Resolved::args entry, so
+        // build_segment_traces never reaches them.
+        CandidateFate::Pending
+        | CandidateFate::SelfFalse
+        | CandidateFate::SuppressedByFalse
+        | CandidateFate::NullGhostUnused
+        | CandidateFate::LostMiddle => (None, vec![make(ContributorRole::Sole, walk_idx)]),
+    }
+}
+
+/// Collect dropped/suppressed candidates for a key whose emission
+/// is being traced. Used by `build_flag_segment_trace` for the first
+/// (and only the first) emission per key.
+fn collect_segment_drops(
+    key_trace: &KeyPlanTrace,
+    candidates: &[(Argument, usize)],
+    indices: &[usize],
+    chain: &[&str],
+) -> Vec<DroppedInfo> {
+    // Use the shared helper so the tier-0 self-`#false` fallback is
+    // applied consistently with the suppressed-keys path.
+    let (by_tier_label, by_span) = suppression_source(key_trace, candidates, chain, indices);
+
+    let mut out: Vec<DroppedInfo> = Vec::new();
+    for &i in indices {
+        let (arg, tier) = &candidates[i];
+        let Argument::Flag {
+            value, key_span, ..
+        } = arg
+        else {
+            unreachable!("invariant: by_key only references flag candidates");
+        };
+        let fate = key_trace.fates.get(&i).copied();
+        let reason = match fate {
+            Some(CandidateFate::SelfFalse) => DroppedReason::SelfFalse,
+            Some(CandidateFate::SuppressedByFalse) => DroppedReason::SuppressedByFalse {
+                by_tier_label: by_tier_label.clone(),
+                by_span,
+            },
+            Some(CandidateFate::LostMiddle) => DroppedReason::MiddleTierLost,
+            _ => continue,
+        };
+        out.push(DroppedInfo {
+            tier: *tier,
+            tier_label: tier_label(*tier, chain),
+            span: *key_span,
+            rendered_value: render_flag_value(value),
+            reason,
+        });
+    }
+    out
 }
 
 /// Build the inheritance chain for `leaf` in `cmd`. Returns
@@ -2346,5 +3301,278 @@ mod tests {
         let cfg = parse(r#"foo cwd="here" { fast cwd="there" {} }"#);
         let r = resolve(&cfg, "foo", None, Path::new("/proj")).unwrap();
         assert_eq!(r.cwd, Some(PathBuf::from("/proj/here")));
+    }
+
+    // --- ResolutionTrace ---
+
+    #[test]
+    fn trace_defaults_only_records_sole_contributors() {
+        let cfg = parse(
+            r#"foo {
+                host "0.0.0.0"
+                port 8090
+            }"#,
+        );
+        let (resolved, trace) = resolve_with_trace(&cfg, "foo", None, Path::new(".")).unwrap();
+        assert_eq!(resolved.args.len(), 2);
+        assert_eq!(trace.segments.len(), 2);
+        for seg in &trace.segments {
+            assert!(
+                seg.mode_summary.is_none(),
+                "single contributor → no summary"
+            );
+            assert_eq!(seg.contributors.len(), 1);
+            let c = &seg.contributors[0];
+            assert!(matches!(c.role, ContributorRole::Sole));
+            assert_eq!(c.tier, 0);
+            assert_eq!(c.tier_label, "defaults");
+            assert!(!c.inherited);
+            assert!(seg.dropped.is_empty());
+        }
+        assert!(trace.suppressed.is_empty());
+        assert!(trace.env.is_empty());
+        assert!(matches!(trace.cwd, CwdTrace::Inherited));
+    }
+
+    #[test]
+    fn trace_single_mode_override_records_position_and_value_winners() {
+        let cfg = parse(
+            r#"foo {
+                host "default"
+                p { host "override" }
+            }"#,
+        );
+        let (_, trace) = resolve_with_trace(&cfg, "foo", Some("p"), Path::new(".")).unwrap();
+        assert_eq!(trace.segments.len(), 1);
+        let seg = &trace.segments[0];
+        assert!(seg.mode_summary.is_some(), "merge → mode_summary set");
+        assert_eq!(seg.contributors.len(), 2);
+        let pos = seg
+            .contributors
+            .iter()
+            .find(|c| matches!(c.role, ContributorRole::PositionOnly));
+        let val = seg
+            .contributors
+            .iter()
+            .find(|c| matches!(c.role, ContributorRole::ValueOnly));
+        let pos = pos.expect("expected a position-only contributor");
+        let val = val.expect("expected a value-only contributor");
+        assert_eq!(pos.tier_label, "defaults");
+        assert_eq!(val.tier_label, "p");
+        // Two-tier override: variant C suppresses any "dropped" line.
+        assert!(seg.dropped.is_empty(), "two-tier override hides drops");
+    }
+
+    #[test]
+    fn trace_inheritance_marks_ancestors_as_inherited() {
+        let cfg = parse(
+            r#"foo {
+                parent { host "p-host" }
+                child extends="parent" { port 8091 }
+            }"#,
+        );
+        let (_, trace) = resolve_with_trace(&cfg, "foo", Some("child"), Path::new(".")).unwrap();
+        assert_eq!(trace.chain, vec!["parent", "child"]);
+        // Two segments: parent's --host (inherited), child's --port (not).
+        let host_seg = trace
+            .segments
+            .iter()
+            .find(|s| s.contributors.iter().any(|c| c.tier_label == "parent"))
+            .expect("expected --host segment with parent contributor");
+        let parent_c = host_seg
+            .contributors
+            .iter()
+            .find(|c| c.tier_label == "parent")
+            .unwrap();
+        assert!(parent_c.inherited, "parent is an ancestor → inherited");
+
+        let port_seg = trace
+            .segments
+            .iter()
+            .find(|s| s.contributors.iter().any(|c| c.tier_label == "child"))
+            .expect("expected --port segment with child contributor");
+        let child_c = port_seg
+            .contributors
+            .iter()
+            .find(|c| c.tier_label == "child")
+            .unwrap();
+        assert!(!child_c.inherited, "child is the leaf → not inherited");
+    }
+
+    #[test]
+    fn trace_suppression_no_segment_records_in_suppressed() {
+        let cfg = parse(
+            r#"foo {
+                host "x"
+                quiet { host #false }
+            }"#,
+        );
+        let (resolved, trace) =
+            resolve_with_trace(&cfg, "foo", Some("quiet"), Path::new(".")).unwrap();
+        assert!(resolved.args.is_empty(), "host wiped → no argv");
+        assert!(trace.segments.is_empty());
+        assert_eq!(trace.suppressed.len(), 1);
+        let s = &trace.suppressed[0];
+        assert_eq!(s.key, "--host");
+        // One cleared default + one suppressor (#false) entry.
+        assert_eq!(s.cleared.len(), 2);
+        let suppressor = s
+            .cleared
+            .iter()
+            .find(|d| matches!(d.reason, DroppedReason::SelfFalse))
+            .expect("expected a SelfFalse suppressor entry");
+        assert_eq!(suppressor.tier_label, "quiet");
+        let cleared = s
+            .cleared
+            .iter()
+            .find(|d| matches!(d.reason, DroppedReason::SuppressedByFalse { .. }))
+            .expect("expected a SuppressedByFalse cleared entry");
+        assert_eq!(cleared.tier_label, "defaults");
+    }
+
+    #[test]
+    fn trace_repeat_mode_emits_one_segment_per_occurrence() {
+        let cfg = parse(
+            r#"gcc {
+                I "/a"
+                I "/b"
+            }"#,
+        );
+        let (resolved, trace) = resolve_with_trace(&cfg, "gcc", None, Path::new(".")).unwrap();
+        assert_eq!(resolved.args.len(), 2);
+        assert_eq!(trace.segments.len(), 2);
+        for seg in &trace.segments {
+            assert!(seg.mode_summary.as_deref().unwrap().contains("repeat"));
+            assert!(matches!(seg.contributors[0].role, ContributorRole::Repeat));
+        }
+    }
+
+    #[test]
+    fn trace_marker_emission_records_marker_role() {
+        let cfg = parse(
+            r#"foo {
+                +I "/extra"
+            }"#,
+        );
+        let (resolved, trace) = resolve_with_trace(&cfg, "foo", None, Path::new(".")).unwrap();
+        assert_eq!(resolved.args.len(), 1);
+        let seg = &trace.segments[0];
+        assert!(seg.mode_summary.as_deref().unwrap().contains("marker"));
+        assert!(matches!(seg.contributors[0].role, ContributorRole::Marker));
+    }
+
+    #[test]
+    fn trace_three_tier_records_chain_in_order() {
+        let cfg = parse(
+            r#"foo {
+                grand {}
+                parent extends="grand" {}
+                child extends="parent" { x "from-child" }
+            }"#,
+        );
+        let (_, trace) = resolve_with_trace(&cfg, "foo", Some("child"), Path::new(".")).unwrap();
+        assert_eq!(trace.chain, vec!["grand", "parent", "child"]);
+        assert_eq!(trace.selected_profile.as_deref(), Some("child"));
+    }
+
+    #[test]
+    fn trace_env_winner_and_shadowed() {
+        let cfg = parse(
+            r#"foo {
+                (env)A "default"
+                p { (env)A "override" }
+            }"#,
+        );
+        let (_, trace) = resolve_with_trace(&cfg, "foo", Some("p"), Path::new(".")).unwrap();
+        assert_eq!(trace.env.len(), 1);
+        let e = &trace.env[0];
+        match &e.outcome {
+            EnvOp::Set { name, .. } => assert_eq!(name, "A"),
+            EnvOp::Unset { .. } => panic!("expected Set"),
+        }
+        assert_eq!(e.winner_tier_label, "p");
+        assert_eq!(e.shadowed.len(), 1);
+        assert_eq!(e.shadowed[0].tier_label, "defaults");
+    }
+
+    #[test]
+    fn trace_cwd_resolved_carries_source_and_tier() {
+        let cfg = parse(r#"foo cwd="/srv" {}"#);
+        let (_, trace) = resolve_with_trace(&cfg, "foo", None, Path::new(".")).unwrap();
+        match trace.cwd {
+            CwdTrace::Resolved {
+                source,
+                tier,
+                tier_label,
+                inherited,
+                ..
+            } => {
+                assert_eq!(source, "/srv");
+                assert_eq!(tier, 0);
+                assert_eq!(tier_label, "command");
+                assert!(!inherited);
+            }
+            CwdTrace::Inherited => panic!("expected resolved cwd"),
+        }
+    }
+
+    #[test]
+    fn trace_three_tier_middle_loss_records_lost_middle() {
+        // Three tiers all set the same flag. Single mode: defaults
+        // wins position (earliest), child wins value (highest tier),
+        // parent loses both — its candidate gets `LostMiddle` and
+        // the segment's `dropped` lists it under MiddleTierLost.
+        let cfg = parse(
+            r#"foo {
+                x "from-default"
+                parent { x "from-parent" }
+                child extends="parent" { x "from-child" }
+            }"#,
+        );
+        let (resolved, trace) =
+            resolve_with_trace(&cfg, "foo", Some("child"), Path::new(".")).unwrap();
+        assert_eq!(resolved.args.len(), 1);
+        assert_eq!(trace.segments.len(), 1);
+        let seg = &trace.segments[0];
+        // Two contributors (defaults position, child value); parent
+        // is in `dropped` rather than `contributors`.
+        assert_eq!(seg.contributors.len(), 2);
+        assert_eq!(seg.dropped.len(), 1);
+        let parent_drop = &seg.dropped[0];
+        assert_eq!(parent_drop.tier_label, "parent");
+        assert_eq!(parent_drop.rendered_value, "\"from-parent\"");
+        assert!(matches!(parent_drop.reason, DroppedReason::MiddleTierLost));
+    }
+
+    #[test]
+    fn trace_null_ghost_position_used_records_ghost_as_position_winner() {
+        // `a #null` reserves position at idx 0 with no value. The
+        // profile supplies the value at a later idx. Single mode
+        // emits at idx 0 with the profile's value; the ghost is
+        // recorded as the position contributor.
+        let cfg = parse(
+            r#"foo {
+                a #null
+                p { a "x" }
+            }"#,
+        );
+        let (resolved, trace) = resolve_with_trace(&cfg, "foo", Some("p"), Path::new(".")).unwrap();
+        assert_eq!(resolved.args.len(), 1);
+        let seg = &trace.segments[0];
+        // Two contributors: the ghost (PositionOnly, defaults tier)
+        // and the profile entry (ValueOnly, p tier).
+        assert_eq!(seg.contributors.len(), 2);
+        let pos = seg
+            .contributors
+            .iter()
+            .find(|c| matches!(c.role, ContributorRole::PositionOnly))
+            .expect("expected a PositionOnly contributor for the ghost");
+        assert_eq!(pos.tier_label, "defaults");
+        let val = seg
+            .contributors
+            .iter()
+            .find(|c| matches!(c.role, ContributorRole::ValueOnly))
+            .expect("expected a ValueOnly contributor for the profile");
+        assert_eq!(val.tier_label, "p");
     }
 }

@@ -19,10 +19,12 @@ mod completions;
 mod config;
 mod errors;
 mod exec;
+mod explain;
 mod format;
 mod list;
 mod resolve;
 mod suggest;
+mod theme;
 
 use std::io::{IsTerminal, Write};
 
@@ -88,6 +90,26 @@ fn run(cli: &Cli) -> Result<i32> {
     }
 
     let command_name = cli.command.as_deref().ok_or(Error::MissingCommand)?;
+
+    if cli.explain {
+        let (resolved, trace) = resolve::resolve_with_trace(
+            &loaded.config,
+            command_name,
+            cli.profile.as_deref(),
+            &loaded.config_dir,
+        )?;
+        let source_name = loaded.src.name();
+        let source_bytes = loaded.src.inner();
+        // Reconstruct the absolute config path so `--explain` can
+        // render it relative to the user's cwd. `config_dir` is
+        // absolute (per `load::absolutise_parent`) and `src.name()`
+        // is the bare filename — joining them recovers the
+        // canonical path used at load time.
+        let source_path = loaded.config_dir.join(source_name);
+        explain::print(&resolved, &trace, source_name, &source_path, source_bytes)?;
+        return Ok(0);
+    }
+
     let resolved = resolve::resolve(
         &loaded.config,
         command_name,
