@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-05-15
+
+### Fixed
+
+- `--explain` now surfaces CLI-supplied pass-through tokens as a
+  trailing argv segment with a `from command line` attribution.
+  Previously the tokens were silently dropped from `--explain` output
+  even though they still flowed through to the executed command and
+  to `--dry-run`.
+
 ## [0.9.0] — 2026-05-15
 
 ### Added
@@ -366,7 +376,8 @@ Initial release. v1, Unix only (Linux and macOS).
 - Static shell completion for bash, zsh, fish, elvish, and powershell via
   `clap_complete`.
 
-[Unreleased]: https://github.com/mb1986/jig/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/mb1986/jig/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/mb1986/jig/releases/tag/v0.9.1
 [0.9.0]: https://github.com/mb1986/jig/releases/tag/v0.9.0
 [0.8.3]: https://github.com/mb1986/jig/releases/tag/v0.8.3
 [0.8.2]: https://github.com/mb1986/jig/releases/tag/v0.8.2
