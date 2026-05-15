@@ -22,6 +22,7 @@ mod exec;
 mod explain;
 mod format;
 mod list;
+mod path;
 mod resolve;
 mod suggest;
 mod theme;
