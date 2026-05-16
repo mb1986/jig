@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Compact `-h` / `--help` output: each option now has a single
+  one-line summary instead of separate short and long forms.
+  Useful caveats live in the summary itself (`--cat` notes it
+  works on unparseable files; `--completions` notes it doesn't
+  need a config file); `SPEC.md` covers the rest. The usage line
+  is now `jig [OPTIONS] <COMMAND> [PROFILE] [PASSTHROUGH]...`
+  and the positional block is relabeled `Arguments:`.
+
+### Fixed
+
+- Fish completion no longer offers jig's own flags after a
+  positional command name. Previously `jig serve -<TAB>` listed
+  every jig flag even though jig stops parsing its own flags at
+  the first positional; bash and zsh already did the right thing.
+- README and the `--cat` doc-comment now state explicitly that the
+  body goes to stdout while the `cat <path>` header goes to
+  stderr. Earlier wording read as if both went to stdout, which
+  contradicted the actual behavior (and `SPEC.md` §3.4.2).
+
 ## [0.10.0] — 2026-05-16
 
 ### Added
