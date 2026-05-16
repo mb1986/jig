@@ -3534,12 +3534,21 @@ fn cat_with_explicit_config_path_uses_that_path() {
     // §3.4.2 + §2.1: `--config <PATH>` skips upward discovery, and
     // `--cat` honours that the same way every other config-consuming
     // flag does. The path display follows the cwd-relative convention.
+    //
+    // Canonicalise the tempdir up front: on macOS the system TMPDIR
+    // sits under `/var/folders/...`, which is a symlink to
+    // `/private/var/folders/...`. `std::env::current_dir()` inside
+    // the child reports the canonical (`/private/...`) form, but the
+    // `--config` argument passed in via `dir.path().join(...)` keeps
+    // the unresolved form, so the cwd-relative diff would produce a
+    // long `../../var/...` walk instead of the bare filename.
     let dir = tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
     let body = "foo\n";
-    let kdl = dir.path().join("custom.kdl");
+    let kdl = root.join("custom.kdl");
     fs::write(&kdl, body).unwrap();
     let out = jig()
-        .current_dir(dir.path())
+        .current_dir(&root)
         .env("NO_COLOR", "1")
         .arg("--config")
         .arg(&kdl)
