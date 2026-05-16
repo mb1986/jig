@@ -55,10 +55,12 @@ pub struct Cli {
     #[arg(short = 'l', long)]
     pub list: bool,
 
-    /// Print the loaded config file (preceded by a `cat <path>`
-    /// header) and exit. Useful when the config sits in an ancestor
-    /// directory and you want to see what `jig` actually loaded.
-    /// Does not require the file to parse.
+    /// Print the loaded config file's body to stdout and a
+    /// `cat <path>` header to stderr, then exit. Useful when the
+    /// config sits in an ancestor directory and you want to see
+    /// what `jig` actually loaded. Splitting the streams keeps
+    /// `jig --cat | grep …` clean. Does not require the file to
+    /// parse.
     #[arg(
         long,
         conflicts_with_all = ["list", "dry_run", "explain", "completions", "list_commands", "list_profiles"],
