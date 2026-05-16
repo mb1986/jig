@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] — 2026-05-16
+
 ### Changed
 
 - Compact `-h` / `--help` output: each option now has a single
@@ -434,7 +436,8 @@ Initial release. v1, Unix only (Linux and macOS).
 - Static shell completion for bash, zsh, fish, elvish, and powershell via
   `clap_complete`.
 
-[Unreleased]: https://github.com/mb1986/jig/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/mb1986/jig/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/mb1986/jig/releases/tag/v0.10.1
 [0.10.0]: https://github.com/mb1986/jig/releases/tag/v0.10.0
 [0.9.1]: https://github.com/mb1986/jig/releases/tag/v0.9.1
 [0.9.0]: https://github.com/mb1986/jig/releases/tag/v0.9.0
