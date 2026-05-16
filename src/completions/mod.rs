@@ -82,4 +82,69 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn zsh_encodes_cat_conflicts() {
+        // `_arguments` exclusion list for `--cat` should drop every
+        // flag clap declares it conflicts with. Tokenize the
+        // parenthesized exclusion list and check exact membership so
+        // `-l` doesn't spuriously match the `-l` substring inside
+        // `--list`.
+        let line = ZSH
+            .lines()
+            .find(|l| l.contains("--cat[Dump"))
+            .expect("zsh script must define a --cat spec");
+        let parens = line
+            .split_once('(')
+            .and_then(|(_, rest)| rest.split_once(')'))
+            .map(|(inner, _)| inner)
+            .expect("zsh --cat spec must start with `(...)` exclusion list");
+        let tokens: Vec<&str> = parens.split_whitespace().collect();
+        for blocked in [
+            "-l",
+            "--list",
+            "-n",
+            "--dry-run",
+            "-x",
+            "--explain",
+            "--completions",
+        ] {
+            assert!(
+                tokens.contains(&blocked),
+                "--cat exclusion list missing `{blocked}`: {tokens:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn zsh_suppresses_command_on_terminal_flag() {
+        assert!(
+            ZSH.contains("terminal_flag_seen"),
+            "zsh script must track terminal flags to suppress command/profile candidates"
+        );
+    }
+
+    #[test]
+    fn bash_filters_conflicting_flags() {
+        assert!(
+            BASH.contains("_jig_filter_flags"),
+            "bash script must define a flag-filtering helper"
+        );
+        assert!(
+            BASH.contains("terminal_flag_seen"),
+            "bash script must track terminal flags to suppress command/profile candidates"
+        );
+    }
+
+    #[test]
+    fn fish_uses_seen_argument_for_conflicts() {
+        assert!(
+            FISH.contains("__fish_seen_argument"),
+            "fish script must use __fish_seen_argument to gate conflicting flags"
+        );
+        assert!(
+            FISH.contains("__jig_terminal_flag_seen"),
+            "fish script must gate command/profile dispatch on terminal flags"
+        );
+    }
 }

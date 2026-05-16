@@ -95,6 +95,15 @@ function __jig_first_positional
     __jig_positionals_in_argv | head -n 1
 end
 
+# True when a "print-and-exit" jig flag is already on the command
+# line. In those modes (`--list`, `--cat`, `--completions`) no command
+# name is needed, so command/profile candidates are suppressed.
+# `--explain` and `--dry-run` are deliberately omitted: they operate
+# on a command, so completion stays useful.
+function __jig_terminal_flag_seen
+    __fish_seen_argument -s l -l list -l cat -l completions
+end
+
 function __jig_complete_commands
     jig (__jig_config_args) --list-commands 2>/dev/null
 end
@@ -108,19 +117,38 @@ end
 
 # Disable default file completion so positional dispatch is clean.
 complete -c jig -f
-complete -c jig -s h -l help -d 'Print help'
-complete -c jig -s V -l version -d 'Print version'
-complete -c jig -s l -l list -d 'List configured commands and profiles'
-complete -c jig -s n -l dry-run -d 'Print the resolved command without running it'
-complete -c jig -s x -l explain -d 'Trace how the resolved command was assembled'
-complete -c jig -l cat -d 'Dump the loaded config file to stdout'
-complete -c jig -s q -l quiet -d 'Suppress the pre-exec preview line'
+# Each flag is suppressed once it (or a flag it conflicts with) is
+# already on the command line. Conflict graph mirrors clap's
+# `conflicts_with_all` declarations in `src/cli.rs`; both sides are
+# listed so the relation is symmetric.
+complete -c jig -n 'not __fish_seen_argument -s h -l help' \
+    -s h -l help -d 'Print help'
+complete -c jig -n 'not __fish_seen_argument -s V -l version' \
+    -s V -l version -d 'Print version'
+complete -c jig -n 'not __fish_seen_argument -s l -l list -l cat -s x -l explain' \
+    -s l -l list -d 'List configured commands and profiles'
+complete -c jig -n 'not __fish_seen_argument -s n -l dry-run -l cat -s x -l explain' \
+    -s n -l dry-run -d 'Print the resolved command without running it'
+complete -c jig -n 'not __fish_seen_argument -s x -l explain -s l -l list -s n -l dry-run -l cat -l completions' \
+    -s x -l explain -d 'Trace how the resolved command was assembled'
+complete -c jig -n 'not __fish_seen_argument -l cat -s l -l list -s n -l dry-run -s x -l explain -l completions' \
+    -l cat -d 'Dump the loaded config file to stdout'
+complete -c jig -n 'not __fish_seen_argument -s q -l quiet' \
+    -s q -l quiet -d 'Suppress the pre-exec preview line'
 # Value-taking jig flags only make sense before the first positional —
 # after that, they're pass-through tokens to the child command and the
-# following value belongs to the child, not jig.
-complete -c jig -n 'test (__jig_positional) -eq 0' -l config -d 'Use this config file' -r -F
-complete -c jig -n 'test (__jig_positional) -eq 0' -l completions -d 'Print a shell completion script' -x -a 'zsh bash fish'
+# following value belongs to the child, not jig. We deliberately do
+# NOT self-block these with `__fish_seen_argument -l config` /
+# `-l completions`: the same `-n` gate controls the option's value
+# candidates (e.g. `zsh bash fish` after `--completions `), so a
+# self-block would suppress the value list once the option is typed.
+complete -c jig -n 'test (__jig_positional) -eq 0' \
+    -l config -d 'Use this config file' -r -F
+complete -c jig -n 'test (__jig_positional) -eq 0; and not __fish_seen_argument -l cat -s x -l explain' \
+    -l completions -d 'Print a shell completion script' -x -a 'zsh bash fish'
 
-complete -c jig -n 'test (__jig_positional) -eq 0' -a '(__jig_complete_commands)' -d 'command or alias'
-complete -c jig -n 'test (__jig_positional) -eq 1' -a '(__jig_complete_profiles)' -d 'profile'
+complete -c jig -n 'test (__jig_positional) -eq 0; and not __jig_terminal_flag_seen' \
+    -a '(__jig_complete_commands)' -d 'command or alias'
+complete -c jig -n 'test (__jig_positional) -eq 1; and not __jig_terminal_flag_seen' \
+    -a '(__jig_complete_profiles)' -d 'profile'
 complete -c jig -n 'test (__jig_positional) -ge 2' -F

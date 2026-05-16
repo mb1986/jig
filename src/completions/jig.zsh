@@ -21,6 +21,11 @@ _jig() {
     local context curcontext="$curcontext" state state_descr line
     local ret=1
     local -a config_args positionals
+    # Set to 1 once any "print-and-exit" jig flag (`--list`, `-l`,
+    # `--cat`, `--completions`) has been seen on the command line. In
+    # those modes no command name is needed, so we suppress dynamic
+    # command/profile candidates below.
+    local terminal_flag_seen=0
 
     # Mirror jig's argv split: parse jig flags only before the first
     # positional command. After that, every token is command/profile/
@@ -50,8 +55,21 @@ _jig() {
                 config_args=("--config=$(_jig_expand_tilde "${word#--config=}")")
                 continue
             fi
-            if [[ "$word" == "--list-profiles" || "$word" == "--completions" ]]; then
+            if [[ "$word" == "--list-profiles" ]]; then
                 skip_next=1
+                continue
+            fi
+            if [[ "$word" == "--completions" ]]; then
+                terminal_flag_seen=1
+                skip_next=1
+                continue
+            fi
+            if [[ "$word" == --completions=* ]]; then
+                terminal_flag_seen=1
+                continue
+            fi
+            if [[ "$word" == "-l" || "$word" == "--list" || "$word" == "--cat" ]]; then
+                terminal_flag_seen=1
                 continue
             fi
             if [[ "$word" == -* ]]; then
@@ -81,22 +99,27 @@ _jig() {
         esac
     fi
 
+    # Exclusion lists encode jig's mutual-exclusion graph (clap's
+    # `conflicts_with` declarations in `src/cli.rs`): once a flag is
+    # matched, every entry in `(...)` is dropped from later candidates.
+    # Listing each side in the other's exclusion list makes the
+    # relation symmetric.
     _arguments -s -S -A "-*" -C \
         '(-h --help)-h[Print help]' \
         '(-h --help)--help[Print help]' \
         '(-V --version)-V[Print version]' \
         '(-V --version)--version[Print version]' \
-        '(-l --list)-l[List configured commands and profiles]' \
-        '(-l --list)--list[List configured commands and profiles]' \
-        '(-n --dry-run)-n[Print the resolved command without running it]' \
-        '(-n --dry-run)--dry-run[Print the resolved command without running it]' \
-        '(-x --explain)-x[Trace how the resolved command was assembled]' \
-        '(-x --explain)--explain[Trace how the resolved command was assembled]' \
-        '--cat[Dump the loaded config file to stdout]' \
+        '(-l --list --cat -x --explain)-l[List configured commands and profiles]' \
+        '(-l --list --cat -x --explain)--list[List configured commands and profiles]' \
+        '(-n --dry-run --cat -x --explain)-n[Print the resolved command without running it]' \
+        '(-n --dry-run --cat -x --explain)--dry-run[Print the resolved command without running it]' \
+        '(-x --explain -l --list -n --dry-run --cat --completions)-x[Trace how the resolved command was assembled]' \
+        '(-x --explain -l --list -n --dry-run --cat --completions)--explain[Trace how the resolved command was assembled]' \
+        '(--cat -l --list -n --dry-run -x --explain --completions)--cat[Dump the loaded config file to stdout]' \
         '(-q --quiet)-q[Suppress the pre-exec preview line]' \
         '(-q --quiet)--quiet[Suppress the pre-exec preview line]' \
         '--config=[Use this config file]:path:_files' \
-        '--completions=[Print a shell completion script]:shell:(zsh bash fish)' \
+        '(--completions --cat -x --explain)--completions=[Print a shell completion script]:shell:(zsh bash fish)' \
         '1:command:->command' \
         '2:profile:->profile' \
         '*::passthrough:_files' \
@@ -104,11 +127,15 @@ _jig() {
 
     case $state in
         command)
+            # `--list` / `--cat` / `--completions` don't take a
+            # command — no candidates to offer.
+            (( terminal_flag_seen )) && return ret
             local -a candidates
             candidates=("${(@f)$("${words[1]}" "${config_args[@]}" --list-commands 2>/dev/null)}")
             _describe -t commands 'command or alias' candidates && ret=0
             ;;
         profile)
+            (( terminal_flag_seen )) && return ret
             local cmd="${positionals[1]}"
             local -a candidates
             if [[ -n "$cmd" ]]; then

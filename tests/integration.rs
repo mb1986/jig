@@ -1749,6 +1749,82 @@ fn bash_completion_initial_hyphen_offers_jig_flags() {
     }
 }
 
+#[test]
+fn bash_completion_after_list_drops_conflicting_flags() {
+    if !shell_present("bash") {
+        eprintln!("skipping: bash not on PATH");
+        return;
+    }
+    let reply = bash_reply(&["jig", "--list", "-"]);
+    for flag in ["-l", "--list", "--cat", "-x", "--explain"] {
+        assert!(
+            !reply.iter().any(|x| x == flag),
+            "must not offer `{flag}` after --list; got {reply:?}"
+        );
+    }
+    for flag in [
+        "-n",
+        "--dry-run",
+        "-q",
+        "--quiet",
+        "--config",
+        "--completions",
+    ] {
+        assert!(
+            reply.iter().any(|x| x == flag),
+            "expected `{flag}` to remain after --list; got {reply:?}"
+        );
+    }
+}
+
+#[test]
+fn bash_completion_after_cat_drops_conflicting_flags() {
+    if !shell_present("bash") {
+        eprintln!("skipping: bash not on PATH");
+        return;
+    }
+    let reply = bash_reply(&["jig", "--cat", "-"]);
+    for flag in [
+        "--cat",
+        "-l",
+        "--list",
+        "-n",
+        "--dry-run",
+        "-x",
+        "--explain",
+        "--completions",
+    ] {
+        assert!(
+            !reply.iter().any(|x| x == flag),
+            "must not offer `{flag}` after --cat; got {reply:?}"
+        );
+    }
+}
+
+#[test]
+fn bash_completion_after_explain_drops_conflicting_flags() {
+    if !shell_present("bash") {
+        eprintln!("skipping: bash not on PATH");
+        return;
+    }
+    let reply = bash_reply(&["jig", "--explain", "-"]);
+    for flag in [
+        "-x",
+        "--explain",
+        "-l",
+        "--list",
+        "-n",
+        "--dry-run",
+        "--cat",
+        "--completions",
+    ] {
+        assert!(
+            !reply.iter().any(|x| x == flag),
+            "must not offer `{flag}` after --explain; got {reply:?}"
+        );
+    }
+}
+
 // --- fish: positional count after first non-flag token ---
 //
 // fish's `__jig_positional` previously treated every `-*` token as
@@ -1982,6 +2058,51 @@ fn fish_completion_completions_value_offers_shell_list() {
         assert!(
             reply.iter().any(|x| x == shell),
             "expected `{shell}`; got {reply:?}"
+        );
+    }
+}
+
+#[test]
+fn fish_completion_after_list_drops_conflicting_flags() {
+    if !shell_present("fish") {
+        eprintln!("skipping: fish not on PATH");
+        return;
+    }
+    let reply = fish_complete("jig --list -");
+    for flag in ["-l", "--list", "--cat", "-x", "--explain"] {
+        assert!(
+            !reply.iter().any(|x| x == flag),
+            "must not offer `{flag}` after --list; got {reply:?}"
+        );
+    }
+    for flag in ["--dry-run", "--quiet", "--config", "--completions"] {
+        assert!(
+            reply.iter().any(|x| x == flag),
+            "expected `{flag}` to remain after --list; got {reply:?}"
+        );
+    }
+}
+
+#[test]
+fn fish_completion_after_cat_drops_conflicting_flags() {
+    if !shell_present("fish") {
+        eprintln!("skipping: fish not on PATH");
+        return;
+    }
+    let reply = fish_complete("jig --cat -");
+    for flag in [
+        "--cat",
+        "-l",
+        "--list",
+        "-n",
+        "--dry-run",
+        "-x",
+        "--explain",
+        "--completions",
+    ] {
+        assert!(
+            !reply.iter().any(|x| x == flag),
+            "must not offer `{flag}` after --cat; got {reply:?}"
         );
     }
 }

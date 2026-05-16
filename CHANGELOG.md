@@ -22,6 +22,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   working directory when possible (with `..` segments if the config
   sits in an ancestor), and falls back to the absolute path otherwise.
 
+### Changed
+
+- Shell completion scripts (zsh, bash, fish) now honor jig's
+  mutual-exclusion graph. Once a flag is on the command line, the
+  flags it conflicts with are dropped from `jig -<TAB>` candidates —
+  typing `jig --list <TAB>` no longer offers `--cat` or `--explain`,
+  `jig --cat <TAB>` drops `--list`, `--dry-run`, `--explain`, and
+  `--completions`, and so on, with the relation applied symmetrically.
+  When `--list`, `--cat`, or `--completions` is present, command and
+  profile candidates are also suppressed (no command name is needed
+  in those modes). `--explain` and `--dry-run` continue to offer
+  command/profile candidates because they operate on a command.
+
 ### Fixed
 
 - Shell completion scripts (zsh, bash, fish) now offer `-x` /
