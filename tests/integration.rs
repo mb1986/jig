@@ -2063,6 +2063,61 @@ fn fish_completion_completions_value_offers_shell_list() {
 }
 
 #[test]
+fn fish_completion_does_not_offer_jig_flags_after_positional() {
+    if !shell_present("fish") {
+        eprintln!("skipping: fish not on PATH");
+        return;
+    }
+    let reply = fish_complete("jig serve -");
+    for flag in JIG_FLAGS {
+        assert!(
+            !reply.iter().any(|x| x == flag),
+            "must not offer jig flag `{flag}` after positional; got {reply:?}"
+        );
+    }
+}
+
+#[test]
+fn fish_completion_does_not_offer_jig_flags_after_two_positionals() {
+    if !shell_present("fish") {
+        eprintln!("skipping: fish not on PATH");
+        return;
+    }
+    let reply = fish_complete("jig serve qwen-coder --");
+    for flag in JIG_FLAGS {
+        assert!(
+            !reply.iter().any(|x| x == flag),
+            "must not offer jig flag `{flag}` after positional; got {reply:?}"
+        );
+    }
+}
+
+#[test]
+fn fish_completion_initial_hyphen_offers_jig_flags() {
+    if !shell_present("fish") {
+        eprintln!("skipping: fish not on PATH");
+        return;
+    }
+    let reply = fish_complete("jig -");
+    for flag in [
+        "--help",
+        "--config",
+        "--list",
+        "--dry-run",
+        "--explain",
+        "--cat",
+        "--version",
+        "--quiet",
+        "--completions",
+    ] {
+        assert!(
+            reply.iter().any(|x| x == flag),
+            "expected jig flag `{flag}`; got {reply:?}"
+        );
+    }
+}
+
+#[test]
 fn fish_completion_after_list_drops_conflicting_flags() {
     if !shell_present("fish") {
         eprintln!("skipping: fish not on PATH");

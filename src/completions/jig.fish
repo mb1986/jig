@@ -117,31 +117,35 @@ end
 
 # Disable default file completion so positional dispatch is clean.
 complete -c jig -f
-# Each flag is suppressed once it (or a flag it conflicts with) is
-# already on the command line. Conflict graph mirrors clap's
-# `conflicts_with_all` declarations in `src/cli.rs`; both sides are
-# listed so the relation is symmetric.
-complete -c jig -n 'not __fish_seen_argument -s h -l help' \
+# Every jig flag is gated by `test (__jig_positional) -eq 0`: jig
+# only parses its own flags before the first positional, so once a
+# command name has been typed, any later hyphen-prefixed token is
+# pass-through context and offering jig flags there would be wrong.
+# The `not __fish_seen_argument ...` clause additionally suppresses
+# a flag once it (or a flag it conflicts with) is already on the
+# command line. Conflict graph mirrors clap's `conflicts_with_all`
+# declarations in `src/cli.rs`; both sides are listed so the
+# relation is symmetric.
+#
+# Value-taking flags (`--config`, `--completions`) are NOT
+# self-blocked with `__fish_seen_argument`: the same `-n` gate
+# controls the option's value candidates (e.g. `zsh bash fish` after
+# `--completions `), so a self-block would suppress the value list
+# once the option is typed.
+complete -c jig -n 'test (__jig_positional) -eq 0; and not __fish_seen_argument -s h -l help' \
     -s h -l help -d 'Print help'
-complete -c jig -n 'not __fish_seen_argument -s V -l version' \
+complete -c jig -n 'test (__jig_positional) -eq 0; and not __fish_seen_argument -s V -l version' \
     -s V -l version -d 'Print version'
-complete -c jig -n 'not __fish_seen_argument -s l -l list -l cat -s x -l explain' \
+complete -c jig -n 'test (__jig_positional) -eq 0; and not __fish_seen_argument -s l -l list -l cat -s x -l explain' \
     -s l -l list -d 'List configured commands and profiles'
-complete -c jig -n 'not __fish_seen_argument -s n -l dry-run -l cat -s x -l explain' \
+complete -c jig -n 'test (__jig_positional) -eq 0; and not __fish_seen_argument -s n -l dry-run -l cat -s x -l explain' \
     -s n -l dry-run -d 'Print the resolved command without running it'
-complete -c jig -n 'not __fish_seen_argument -s x -l explain -s l -l list -s n -l dry-run -l cat -l completions' \
+complete -c jig -n 'test (__jig_positional) -eq 0; and not __fish_seen_argument -s x -l explain -s l -l list -s n -l dry-run -l cat -l completions' \
     -s x -l explain -d 'Trace how the resolved command was assembled'
-complete -c jig -n 'not __fish_seen_argument -l cat -s l -l list -s n -l dry-run -s x -l explain -l completions' \
+complete -c jig -n 'test (__jig_positional) -eq 0; and not __fish_seen_argument -l cat -s l -l list -s n -l dry-run -s x -l explain -l completions' \
     -l cat -d 'Dump the loaded config file to stdout'
-complete -c jig -n 'not __fish_seen_argument -s q -l quiet' \
+complete -c jig -n 'test (__jig_positional) -eq 0; and not __fish_seen_argument -s q -l quiet' \
     -s q -l quiet -d 'Suppress the pre-exec preview line'
-# Value-taking jig flags only make sense before the first positional —
-# after that, they're pass-through tokens to the child command and the
-# following value belongs to the child, not jig. We deliberately do
-# NOT self-block these with `__fish_seen_argument -l config` /
-# `-l completions`: the same `-n` gate controls the option's value
-# candidates (e.g. `zsh bash fish` after `--completions `), so a
-# self-block would suppress the value list once the option is typed.
 complete -c jig -n 'test (__jig_positional) -eq 0' \
     -l config -d 'Use this config file' -r -F
 complete -c jig -n 'test (__jig_positional) -eq 0; and not __fish_seen_argument -l cat -s x -l explain' \
