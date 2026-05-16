@@ -1687,6 +1687,7 @@ const JIG_FLAGS: &[&str] = &[
     "--dry-run",
     "-x",
     "--explain",
+    "--cat",
     "-q",
     "--quiet",
     "--config",
@@ -1736,6 +1737,7 @@ fn bash_completion_initial_hyphen_offers_jig_flags() {
         "--list",
         "--dry-run",
         "--explain",
+        "--cat",
         "--version",
         "--quiet",
         "--completions",
@@ -3334,4 +3336,129 @@ fn explain_renders_env_and_cwd() {
     assert!(stdout.contains("cwd:"));
     assert!(stdout.contains("(shadowed)"));
     insta::assert_snapshot!(stdout);
+}
+
+#[test]
+fn cat_dumps_config_with_header_on_stderr_and_body_on_stdout() {
+    // §3.4.2: --cat writes the `cat <path>` header to stderr and the
+    // file's raw contents to stdout, then exits 0. Splitting the
+    // streams means `jig --cat | grep …` sees only the file body.
+    // With NO_COLOR set the header is plain text (no ANSI escapes),
+    // so we can assert against it directly.
+    let dir = tempdir().unwrap();
+    let body = "llama-server \"serve\" {\n    host \"0.0.0.0\"\n}\n";
+    fs::write(dir.path().join("jig.kdl"), body).unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .env("NO_COLOR", "1")
+        .arg("--cat")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    // Relative path because the config sits in cwd.
+    assert_eq!(stderr, "cat jig.kdl\n");
+    assert_eq!(stdout, body);
+}
+
+#[test]
+fn cat_renders_relative_path_when_config_is_in_ancestor() {
+    // §3.4.2: when the config sits in an ancestor of the cwd, the
+    // header uses `..` segments — same display convention as the
+    // `config:` line in --list / --explain output.
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "foo\n").unwrap();
+    let sub = dir.path().join("a/b");
+    fs::create_dir_all(&sub).unwrap();
+    let out = jig()
+        .current_dir(&sub)
+        // Constrain the upward walk to the tempdir tree.
+        .env("HOME", dir.path())
+        .env("NO_COLOR", "1")
+        .arg("--cat")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert_eq!(stderr, "cat ../../jig.kdl\n");
+    assert_eq!(stdout, "foo\n");
+}
+
+#[test]
+fn cat_dumps_malformed_config() {
+    // §3.4.2: a config that fails to parse can still be dumped, so
+    // users can inspect it while debugging. Exit code stays 0.
+    let dir = tempdir().unwrap();
+    // Unclosed child block — the same shape exercised by
+    // `malformed_kdl_exits_125_with_parse_diagnostic`.
+    let body = "foo {\n  bar \"x\"\n";
+    fs::write(dir.path().join("jig.kdl"), body).unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .env("NO_COLOR", "1")
+        .arg("--cat")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert_eq!(stderr, "cat jig.kdl\n");
+    assert_eq!(stdout, body);
+}
+
+#[test]
+fn cat_with_explicit_config_path_uses_that_path() {
+    // §3.4.2 + §2.1: `--config <PATH>` skips upward discovery, and
+    // `--cat` honours that the same way every other config-consuming
+    // flag does. The path display follows the cwd-relative convention.
+    let dir = tempdir().unwrap();
+    let body = "foo\n";
+    let kdl = dir.path().join("custom.kdl");
+    fs::write(&kdl, body).unwrap();
+    let out = jig()
+        .current_dir(dir.path())
+        .env("NO_COLOR", "1")
+        .arg("--config")
+        .arg(&kdl)
+        .arg("--cat")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert_eq!(stderr, "cat custom.kdl\n");
+    assert_eq!(stdout, body);
+}
+
+#[test]
+fn cat_missing_config_exits_125() {
+    // §3.4.2: --cat shares the standard discovery rules, so a missing
+    // config produces the same `config file not found` diagnostic and
+    // exit 125 as any other invocation.
+    let dir = tempdir().unwrap();
+    jig()
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .arg("--cat")
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains("config file not found"));
+}
+
+#[test]
+fn cat_conflicts_with_list() {
+    // §3.4.2: --cat is mutually exclusive with --list / --dry-run /
+    // --explain / --completions. clap surfaces the conflict as a
+    // usage error.
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("jig.kdl"), "foo\n").unwrap();
+    jig()
+        .current_dir(dir.path())
+        .arg("--cat")
+        .arg("--list")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
 }

@@ -13,6 +13,7 @@
 // would only add allocations on the cold path.
 #![allow(clippy::result_large_err)]
 
+mod cat;
 mod cli;
 mod complete;
 mod completions;
@@ -79,6 +80,16 @@ fn run(cli: &Cli) -> Result<i32> {
         {
             complete::print_profiles(&loaded.config, name);
         }
+        return Ok(0);
+    }
+
+    // `--cat` is intentionally placed before the parse/validate
+    // step so a malformed config can still be dumped — the whole
+    // point is being able to inspect a file that `jig` itself
+    // would refuse to load.
+    if cli.cat {
+        let (path, content) = config::load::locate_and_read(cli.config.as_deref())?;
+        cat::print(&path, &content)?;
         return Ok(0);
     }
 

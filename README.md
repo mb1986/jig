@@ -149,6 +149,7 @@ jig [FLAGS]... <command-or-alias> [profile] [PASSTHROUGH]...
 | `-q`, `--quiet`         | Suppress the pre-exec preview line (see below).                    |
 | `--config <PATH>`       | Use `<PATH>` instead of searching CWD and its ancestors for `jig.kdl` / `.jig.kdl`. |
 | `-l`, `--list`          | List configured commands, aliases, env vars, and profiles.        |
+| `--cat`                 | Dump the loaded config file (with a `cat <path>` header) to stdout. |
 | `--completions <SHELL>` | Emit a shell completion script (`zsh`, `bash`, `fish`) to stdout.  |
 | `-h`, `--help`          | Print help.                                                        |
 | `-V`, `--version`       | Print version.                                                     |

@@ -36,6 +36,31 @@ pub struct Loaded {
     pub config_dir: PathBuf,
 }
 
+/// Locate and read the config file without parsing it.
+///
+/// Same discovery rules as [`load`] (explicit `--config` path wins,
+/// otherwise upward walk from CWD bounded by `$HOME`), but stops
+/// after reading the file's bytes. Used by paths that need the
+/// raw text even when the file would not parse as KDL (currently
+/// `--cat`).
+///
+/// # Errors
+///
+/// Returns [`Error::ConfigNotFound`] if no config file exists in
+/// the search range, or [`Error::ConfigIo`] if reading the chosen
+/// file fails.
+pub fn locate_and_read(explicit: Option<&Path>) -> Result<(PathBuf, String)> {
+    let path = match explicit {
+        Some(p) => p.to_path_buf(),
+        None => discover_upward()?,
+    };
+    let content = fs::read_to_string(&path).map_err(|source| Error::ConfigIo {
+        path: path.clone(),
+        source,
+    })?;
+    Ok((path, content))
+}
+
 /// Load and parse the config.
 ///
 /// If `explicit` is `Some`, that path is used directly (relative
@@ -51,14 +76,7 @@ pub struct Loaded {
 /// the search range, [`Error::ConfigIo`] if reading the chosen
 /// file fails, or any error produced by [`parse::parse_str`].
 pub fn load(explicit: Option<&Path>) -> Result<Loaded> {
-    let path = match explicit {
-        Some(p) => p.to_path_buf(),
-        None => discover_upward()?,
-    };
-    let content = fs::read_to_string(&path).map_err(|source| Error::ConfigIo {
-        path: path.clone(),
-        source,
-    })?;
+    let (path, content) = locate_and_read(explicit)?;
     let display_name = path.file_name().map_or_else(
         || path.display().to_string(),
         |n| n.to_string_lossy().into_owned(),

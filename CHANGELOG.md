@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `--cat` flag. Writes the loaded config file's body to stdout and
+  a `cat <path>` header to stderr (bold on a terminal), so
+  `jig --cat | grep …` sees only the file content. The header
+  reports a shell-quoted, cwd-relative path. Works even when the
+  file fails to parse, so a broken config can still be inspected.
+  Mutually exclusive with `--list`, `--dry-run`, `--explain`, and
+  `--completions`; tab completion for zsh, bash, and fish offers it.
 - `--list` output now starts with a `config:` header line naming the
   loaded config file, mirroring the `config:` line at the top of
   `--explain` output. The path is rendered relative to the current

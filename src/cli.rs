@@ -55,6 +55,16 @@ pub struct Cli {
     #[arg(short = 'l', long)]
     pub list: bool,
 
+    /// Print the loaded config file (preceded by a `cat <path>`
+    /// header) and exit. Useful when the config sits in an ancestor
+    /// directory and you want to see what `jig` actually loaded.
+    /// Does not require the file to parse.
+    #[arg(
+        long,
+        conflicts_with_all = ["list", "dry_run", "explain", "completions", "list_commands", "list_profiles"],
+    )]
+    pub cat: bool,
+
     /// Print the resolved command (shell-quoted) and exit without
     /// executing.
     #[arg(short = 'n', long)]

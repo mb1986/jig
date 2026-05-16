@@ -668,6 +668,7 @@ Rationale: pass-through tokens are user additions on top of the resolved command
 | `-q`, `--quiet`       | Suppress the pre-exec preview line (§3.4.1). No effect on `--dry-run`, `--list`, or any other non-exec path. |
 | `--config <PATH>`     | Use `<PATH>` instead of looking for `jig.kdl` / `.jig.kdl` in CWD. |
 | `-l`, `--list`        | List all configured commands, aliases, and profiles. Exits 0. |
+| `--cat`               | Print the loaded config file (preceded by a `cat <path>` header) to stdout and exit 0. Does not require the file to parse — useful for inspecting a broken config. See §3.4.2. |
 | `--completions <SHELL>` | Generate a shell completion script for `<SHELL>` (`zsh`, `bash`, `fish`) and write it to stdout. Exits 0. Hidden from `--help`. |
 | `-h`, `--help`        | Print help and exit. |
 | `-V`, `--version`     | Print version and exit. |
@@ -687,6 +688,24 @@ The preview is suppressed when:
 - any non-exec path is taken (`--list`, `--completions`, `--help`, `--version`, the hidden `--list-commands` / `--list-profiles`).
 
 The preview is purely informational and is not part of the child process's stderr — it is written by `jig` itself, before the child is spawned. It never affects exit codes, argv, or the child's environment.
+
+#### 3.4.2 Configuration dump
+
+`--cat` resolves the config file using the same discovery rules as every other invocation (§2.1) and prints its raw contents to **stdout**, after writing a single header line of the form:
+
+```
+cat <path>
+```
+
+to **stderr**. Splitting the streams keeps the stdout pipeline pure: `jig --cat | grep …`, `jig --cat | wc -l`, etc. see only the file body, while the header still appears at the terminal as a one-line orientation cue.
+
+The path is rendered relative to the current working directory when possible (with `..` segments if the config sits in an ancestor), and falls back to the absolute path otherwise — same display convention as the `config:` line at the top of `--list` and `--explain` output. The path is shell-quoted, so the header reads as a runnable `cat` invocation against the loaded file. When stderr is a terminal and `NO_COLOR` is unset, the header is rendered in bold (ANSI `\x1b[1m…\x1b[0m`); otherwise it is plain text — same rule the pre-exec preview (§3.4.1) uses for its stderr line.
+
+The body is written to stdout verbatim — no re-encoding, no comment-stripping, no trailing-newline normalization.
+
+Unlike every other config-consuming flag, `--cat` does not require the file to parse: a file that fails KDL parsing or constraint validation is still dumped. The only failure modes are "no config found" and "config found but could not be read", both of which exit 125 with the standard diagnostics. This makes `--cat` a useful tool for inspecting a broken config without having to first locate it manually.
+
+`--cat` is mutually exclusive with `--list`, `--dry-run`, `--explain`, and `--completions`.
 
 The `--completions` flag emits a completion script that completes `jig`'s own flags and dispatches to `jig --list-commands` and `jig --list-profiles <COMMAND>` to enumerate command names, aliases, and profile names from the local `jig.kdl` at completion time. The shell scripts forward an explicit `--config <PATH>` from the user's command line so candidates always reflect the chosen config.
 

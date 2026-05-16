@@ -92,6 +92,7 @@ _jig() {
         '(-n --dry-run)--dry-run[Print the resolved command without running it]' \
         '(-x --explain)-x[Trace how the resolved command was assembled]' \
         '(-x --explain)--explain[Trace how the resolved command was assembled]' \
+        '--cat[Dump the loaded config file to stdout]' \
         '(-q --quiet)-q[Suppress the pre-exec preview line]' \
         '(-q --quiet)--quiet[Suppress the pre-exec preview line]' \
         '--config=[Use this config file]:path:_files' \

@@ -113,6 +113,7 @@ complete -c jig -s V -l version -d 'Print version'
 complete -c jig -s l -l list -d 'List configured commands and profiles'
 complete -c jig -s n -l dry-run -d 'Print the resolved command without running it'
 complete -c jig -s x -l explain -d 'Trace how the resolved command was assembled'
+complete -c jig -l cat -d 'Dump the loaded config file to stdout'
 complete -c jig -s q -l quiet -d 'Suppress the pre-exec preview line'
 # Value-taking jig flags only make sense before the first positional —
 # after that, they're pass-through tokens to the child command and the
