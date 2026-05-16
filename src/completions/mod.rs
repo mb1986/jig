@@ -18,11 +18,8 @@ const FISH: &str = include_str!("jig.fish");
 /// Shells for which `jig` can emit a completion script.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum Shell {
-    /// Zsh — primary target.
     Zsh,
-    /// Bash — broad compatibility.
     Bash,
-    /// Fish — popular among Rust users.
     Fish,
 }
 

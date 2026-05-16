@@ -23,12 +23,15 @@ use clap::{Parser, ValueHint};
 
 use crate::completions::Shell;
 
-const USAGE_NOTES: &str = "\
-Positional arguments:
-  <COMMAND>      Command name or alias from jig.kdl.
-  [PROFILE]      Optional profile name within COMMAND.
-  [PASSTHROUGH]  Arguments appended verbatim to the resolved command line. May
-                 include a literal `--` and tokens that look like flags.";
+// Rendered after the standard Options block. clap doesn't render
+// positionals declared with `#[arg(skip)]` (jig fills them via
+// `parse_argv`, not clap), so we restate the positional grammar
+// here under the conventional "Arguments:" heading.
+const ARGUMENTS_BLOCK: &str = "\
+Arguments:
+  <COMMAND>      Command name or alias from jig.kdl
+  [PROFILE]      Optional profile within <COMMAND>
+  [PASSTHROUGH]  Verbatim args appended to the resolved command line";
 
 /// `jig` — run commands with arguments taken from a declarative
 /// configuration file.
@@ -43,40 +46,34 @@ Positional arguments:
     version,
     about,
     long_about = None,
-    after_help = USAGE_NOTES,
+    override_usage = "jig [OPTIONS] <COMMAND> [PROFILE] [PASSTHROUGH]...",
+    after_help = ARGUMENTS_BLOCK,
 )]
+// Each option's doc-comment is a single short summary. `-h` and
+// `--help` render identically — for a tool with ~7 user-facing
+// flags, a two-tier help mode adds noise without value; SPEC.md
+// and README cover the depth.
 pub struct Cli {
-    /// Use `<PATH>` instead of looking for `jig.kdl` / `.jig.kdl`
-    /// in the current working directory.
+    /// Use `<PATH>` instead of discovering `jig.kdl`.
     #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath)]
     pub config: Option<PathBuf>,
 
-    /// List all configured commands, aliases, and profiles.
+    /// List configured commands, aliases, and profiles.
     #[arg(short = 'l', long)]
     pub list: bool,
 
-    /// Print the loaded config file's body to stdout and a
-    /// `cat <path>` header to stderr, then exit. Useful when the
-    /// config sits in an ancestor directory and you want to see
-    /// what `jig` actually loaded. Splitting the streams keeps
-    /// `jig --cat | grep …` clean. Does not require the file to
-    /// parse.
+    /// Dump the loaded config file (does not require it to parse).
     #[arg(
         long,
         conflicts_with_all = ["list", "dry_run", "explain", "completions", "list_commands", "list_profiles"],
     )]
     pub cat: bool,
 
-    /// Print the resolved command (shell-quoted) and exit without
-    /// executing.
+    /// Print the resolved command without running it.
     #[arg(short = 'n', long)]
     pub dry_run: bool,
 
-    /// Trace how the resolved command was assembled (which tier
-    /// supplied each argument, where it was written) and exit
-    /// without executing. Useful when an unexpected flag value
-    /// shows up and you want to know which profile or default
-    /// produced it.
+    /// Trace how the resolved command was assembled.
     #[arg(
         short = 'x',
         long,
@@ -84,15 +81,11 @@ pub struct Cli {
     )]
     pub explain: bool,
 
-    /// Suppress the pre-exec preview line that `jig` writes to
-    /// stderr before spawning the resolved command. No effect on
-    /// `--dry-run`, `--list`, or any other non-exec path.
+    /// Suppress the pre-exec preview line.
     #[arg(short = 'q', long)]
     pub quiet: bool,
 
-    /// Print a shell completion script for `<SHELL>` (zsh, bash,
-    /// fish) to stdout. Typically piped into the shell's completion
-    /// directory at install time. Does not require a config file.
+    /// Emit a shell completion script (no config file needed).
     #[arg(long, value_name = "SHELL")]
     pub completions: Option<Shell>,
 
