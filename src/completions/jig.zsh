@@ -90,6 +90,8 @@ _jig() {
         '(-l --list)--list[List configured commands and profiles]' \
         '(-n --dry-run)-n[Print the resolved command without running it]' \
         '(-n --dry-run)--dry-run[Print the resolved command without running it]' \
+        '(-x --explain)-x[Trace how the resolved command was assembled]' \
+        '(-x --explain)--explain[Trace how the resolved command was assembled]' \
         '(-q --quiet)-q[Suppress the pre-exec preview line]' \
         '(-q --quiet)--quiet[Suppress the pre-exec preview line]' \
         '--config=[Use this config file]:path:_files' \

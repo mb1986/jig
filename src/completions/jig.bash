@@ -85,7 +85,7 @@ _jig() {
     # `-` is pass-through, so fall through to file completion.
     if [[ "$cur" == -* ]]; then
         if (( ${#positionals[@]} == 0 )); then
-            COMPREPLY=( $(compgen -W "-h --help -V --version -l --list -n --dry-run -q --quiet --config --completions" -- "$cur") )
+            COMPREPLY=( $(compgen -W "-h --help -V --version -l --list -n --dry-run -x --explain -q --quiet --config --completions" -- "$cur") )
         else
             COMPREPLY=( $(compgen -f -- "$cur") )
         fi

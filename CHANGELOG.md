@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   working directory when possible (with `..` segments if the config
   sits in an ancestor), and falls back to the absolute path otherwise.
 
+### Fixed
+
+- Shell completion scripts (zsh, bash, fish) now offer `-x` /
+  `--explain` as candidates. The flag landed in 0.9.0 but was not
+  added to the completion scripts at the time, so tab-completing
+  `jig -<TAB>` never surfaced it.
+
 ## [0.9.1] — 2026-05-15
 
 ### Fixed
